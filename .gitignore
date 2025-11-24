@@ -1,0 +1,4 @@
+*.las
+*.laz
+RandLANetImplementation/data/*.las
+RandLANetImplementation/data/*.laz
