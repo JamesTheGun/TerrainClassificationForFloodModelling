@@ -1,27 +1,58 @@
 from dataclasses import dataclass
 import pandas as pd
-from constants import HYPER_PARAMETERS, TRAIN_TO_HOLDOUT_RATIO, STRIDE, WINDOW_SIZE
-from typing import List
+from RandLANetImplementation.constants import HYPER_PARAMETERS, TRAIN_PER_HOLDOUT, POSITIVE_CLASS_DIR, NEGATIVE_CLASS_DIR, TRAIN_PER_TEST_FOLD
+from typing import List, Tuple
 import torch
+from sklearn.cluster import KMeans
+import laspy
 
+def load_pos_neg_dfs() -> pd.DataFrame:
+    pos_class = laspy.read(POSITIVE_CLASS_DIR)
+    neg_class = laspy.read(NEGATIVE_CLASS_DIR)
+    pos_class = pd.DataFrame({dim.name: pos_class[dim.name] 
+                   for dim in pos_class.point_format.dimensions})
+    neg_class = pd.DataFrame({dim.name: neg_class[dim.name] 
+                   for dim in neg_class.point_format.dimensions})
+    pos_class["label"] = 1
+    neg_class["label"] = 0
+    combined = pd.concat([pos_class, neg_class])
+    #TO DO... unfuck this coercsion thing, like we need to make
+    #sure we are actually doing this right... for now just fucking
+    #stuff everything into numeric...
+    combined = combined.apply(pd.to_numeric, errors = 'coerce')
+    return combined
 
-def load_df():
-    pass
+def build_lidar_tensor(las_df: pd.DataFrame) -> torch.Tensor:
+    #consider using mixed procision for some vars in future...
+    tensor = torch.tensor(las_df.to_numpy(), dtype=torch.float32)
+    return tensor
 
+def las_split_kmeans(points: torch.Tensor, split_count=30) -> List[torch.Tensor]:
+    #build folds using kmeans
+    coords = points[:, :2].cpu().numpy() #split using x and y
+    labels = KMeans(n_clusters=split_count).fit_predict(coords)
 
-def build_lidar_tensor(lidar_data_pd_df: pd.DataFrame) -> torch.Tensor:
-    pass
+    labels = torch.from_numpy(labels).long()
 
+    splits = []
+    for f in range(split_count):
+        idx = torch.nonzero(labels == f, as_tuple=False).squeeze(1)
+        splits.append(idx) 
+    return splits
 
-def build_lidar_window_fold(
-    points: torch.Tensor, window_size=WINDOW_SIZE, stride=STRIDE
-):
-    N, D = points.shape
-    starts = torch.arange(0, N, stride)
-    windows_idxs = (starts.unsqueeze(1) + torch.arange(window_size)) % N  # 2d
-    windows = points[windows_idxs]
-    return windows
+def get_train_test_sets(data: torch.Tensor, test_per_train: int = 7) -> Tuple[torch.Tensor]:
+    splits = las_split_kmeans(data, test_per_train + 1)
+    test_idxs = splits[0]
+    train_idxs = torch.cat(splits[1:], dim=0)
+    print(test_idxs)
+    print(train_idxs)
+    train = data[train_idxs]
+    test = data[test_idxs]
+    return train, test
 
+def get_folds(data: torch.Tensor, fold_count: int) -> List[torch.Tensor]:
+    folds = las_split_kmeans(data, fold_count)
+    return folds
 
 @dataclass
 class modelData:
@@ -37,28 +68,32 @@ class modelData:
     def prepare_hyper_params(self):
         self.hyper_params = HYPER_PARAMETERS
 
-    def prepare_train_test(self, train_to_test_ratio: float = None):
-        if not train_to_test_ratio:
-            train_to_test_ratio = TRAIN_TO_HOLDOUT_RATIO
+    def prepare_train_test(self, train_per_holdout: float = None):
+        if not train_per_holdout:
+            train_per_holdout = TRAIN_PER_HOLDOUT
         self.train_set, self.test_set = self._get_train_test(
-            self.data, train_to_test_ratio
+            self.data, train_per_holdout
         )
 
-    def new_split(self, train_to_test_ratio: float = None):
+    def prepare_folds():
+        pass
+
+    def new_split(self, train_to_hold_out: int = None, train_test_ratio_fold: int = None):
         self.prepare_hyper_params()
-        self.prepare_data()
-        self.prepare_train_test(train_to_test_ratio)
+        self.prepare_train_test(train_to_hold_out)
+        self.prepare_folds(train_test_ratio_fold)
 
     @staticmethod
-    def _get_train_test(data: pd.DataFrame, train_to_test_ratio: float):
-        pass
+    def _get_train_test_tensors(data: pd.DataFrame, train_per_holdout: int):
+        las_tensor = build_lidar_tensor(data)
+        return get_train_test_sets(las_tensor, train_per_holdout)
 
     @staticmethod
-    def _get_folds(data: pd.DataFrame, ratio: float):
-        pass
+    def _get_folds(data: torch.Tensor, train_per_holdout: int):
+        return get_folds(data, train_per_holdout)
 
     def init_folds(self):
-        folds = self._get_fold(self.data, TRAIN_TO_HOLDOUT_RATIO)
+        self.folds = self._get_fold(self.data, TRAIN_PER_TEST_FOLD)
 
     def next_fold():
         pass
