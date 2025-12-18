@@ -1,9 +1,28 @@
-from dataclasses import dataclass
-import pandas as pd
-from common.data_loading import build_lidar_tensor
 from typing import List, Tuple
+from dataclasses import dataclass
+from structuring import get_negative_geotiff_tensor, get_positive_geotiff_tensor, get_combined_geotiff_tensor
+import pandas as pd
 import torch
-from common.data_loading import load_combined_pos_neg_df
+import subprocess
+
+def standardise_geotiffs():
+    import subprocess
+    subprocess.run([
+        "gdalwarp",
+        "-t_srs", "EPSG:XXXX",
+        "-tr", "1", "1",
+        "-r", "bilinear",
+        "-overwrite",
+        "in.tif",
+        "out.tif",
+    ], check=True)
+
+def load_combined_pos_neg_df_structured() -> pd.DataFrame:
+    positive = get_positive_geotiff_tensor()
+    combined = get_combined_geotiff_tensor()
+    label = torch.full_like(combined[:1], 0)
+    combined = torch.cat([label,combined], dim=0)
+    
 
 @dataclass
 class modelData:
@@ -18,7 +37,7 @@ class modelData:
     fold_index: int = 0
 
     def prepare_data(self):
-        self.data = load_combined_pos_neg_df()
+        self.data = load_combined_pos_neg_df_structured()
 
     def set_hyper_params(self, HYPER_PARAMETERS):
         self.hyper_params = HYPER_PARAMETERS

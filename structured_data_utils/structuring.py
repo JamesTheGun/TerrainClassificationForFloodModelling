@@ -2,12 +2,14 @@ import pandas as pd
 import json
 import pdal
 import re
+from affine import Affine
 import torch
 import json
 import os
 import glob
-from common.constants import POSITIVE_CLASS_DIR, NEGATIVE_CLASS_DIR, POSITIVE_GEOTIFF_DIR, NEGATIVE_GEOTIFF_DIR
+from common.constants import POSITIVE_LAS_DIR, NEGATIVE_LAS_DIR, POSITIVE_GEOTIFF_DIR, NEGATIVE_GEOTIFF_DIR, COMBINED_GEOTIFF_DIR, COMBINED_LAS_DIR
 import rasterio
+import numpy as np
 
 class GeotiffGeneration():
     @staticmethod
@@ -50,27 +52,51 @@ class GeotiffGeneration():
 
         cls._generate_geotiffs_for_dir(
             template_text,
-            POSITIVE_CLASS_DIR,
+            POSITIVE_LAS_DIR,
             POSITIVE_GEOTIFF_DIR,
         )
 
         cls._generate_geotiffs_for_dir(
             template_text,
-            NEGATIVE_CLASS_DIR,
+            NEGATIVE_LAS_DIR,
             NEGATIVE_GEOTIFF_DIR,
+        )
+
+        cls._generate_geotiffs_for_dir(
+            template_text,
+            COMBINED_LAS_DIR,
+            COMBINED_GEOTIFF_DIR,
         )
 
 def two_dimensionify(las_data: pd.DataFrame) -> torch.Tensor:
     pass
 
-def tensor_from_geotiff(geotiff_dir: str) -> torch.Tensor:
-    with rasterio.open(geotiff_dir) as target:
-        image_data = target.read()
-    as_tensor = torch.from_numpy(image_data)
-    return as_tensor
+def get_geotiff_true_origin(geotiff_path: str) -> Tuple[CRS, Tuple[float, float], float, float]:
+    with rasterio.open(geotiff_path) as reader:
+        crs = reader.crs
+        transform: Affine = reader.transform
+
+        x_origin: float
+        y_origin: float
+        x_origin, y_origin = transform * (0, 0)
+
+        px_width: float = transform.a
+        px_height: float = transform.e
+
+    return crs, (x_origin, y_origin), px_width, px_height
+
+def tensor_from_geotiff(geotiff_path: str) -> torch.Tensor:
+    with rasterio.open(geotiff_path) as reader:
+        data = reader.read(masked=True)  # shape: (C, H, W), masked array
+    data = data.filled(np.nan)
+    tensor = torch.from_numpy(data).float()
+    return tensor
 
 def get_negative_geotiff_tensor():
     return tensor_from_geotiff(NEGATIVE_GEOTIFF_DIR)
 
 def get_positive_geotiff_tensor():
     return tensor_from_geotiff(POSITIVE_GEOTIFF_DIR)
+
+def get_combined_geotiff_tensor():
+    return tensor_from_geotiff(COMBINED_GEOTIFF_DIR)

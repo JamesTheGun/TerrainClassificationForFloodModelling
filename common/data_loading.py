@@ -1,15 +1,15 @@
 from dataclasses import dataclass
 import pandas as pd
 import numpy as np
-from .constants import POSITIVE_CLASS_DIR, NEGATIVE_CLASS_DIR, KEEP_DIMS
+from .constants import POSITIVE_LAS_DIR, NEGATIVE_LAS_DIR, KEEP_DIMS
 from typing import List, Tuple
 import torch
 from sklearn.cluster import KMeans
 import laspy
 
 def load_combined_pos_neg_df() -> pd.DataFrame:
-    pos_class = laspy.read(POSITIVE_CLASS_DIR)
-    neg_class = laspy.read(NEGATIVE_CLASS_DIR)
+    pos_class = laspy.read(POSITIVE_LAS_DIR)
+    neg_class = laspy.read(NEGATIVE_LAS_DIR)
     pos_class = pd.DataFrame({
         dim.name: pos_class[dim.name]
         for dim in pos_class.point_format.dimensions

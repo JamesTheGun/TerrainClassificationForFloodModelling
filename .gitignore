@@ -1,5 +1,8 @@
 *.las
 *.laz
+*.tif
 data/*.las
 data/*.laz
+data/*.las
+data/*.tif
 .vscode
