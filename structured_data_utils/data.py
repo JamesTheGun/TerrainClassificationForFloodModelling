@@ -8,7 +8,7 @@ import torch.nn.functional as F
 
 from common.data_managment import DataWithLabels
 from structured_data_utils.config.constants import ESPSG, GEOTIFF_LOCATIONS_TO_CORRESPONDING_STANDARDISED_LOCATION, RES, EMPTY_VAL
-from structured_data_utils.structured_data_interfacing import get_segments_with_sliding_window, remove_empty_segments, load_combined_pos_neg_df_structured, put_nans_in_neggative_positions
+from structured_data_utils.structured_data_interfacing import get_segments_with_sliding_window, remove_empty_segments, load_data_with_labeles, put_nans_in_neggative_positions, remove_segments_missing_positive, infer_nans
 
 @dataclass
 class ModelData:
@@ -19,16 +19,16 @@ class ModelData:
     train_set: DataWithLabels = None
     test_set: DataWithLabels = None
 
-    def prepare_data(self):
-        self.data_with_labels = load_combined_pos_neg_df_structured()
-        print("@@")
-        print(put_nans_in_neggative_positions(self.data_with_labels.data))
-        print(self.data_with_labels.data.mean())
+    def prepare_data(self, folder_name: str, test: bool = False, sliding_window_size = 300, stride = 300):
+        self.data_with_labels = load_data_with_labeles(test, folder_name)
         self.data_with_labels.data = put_nans_in_neggative_positions(self.data_with_labels.data)
-        print(self.data_with_labels.data.mean())
-        print("@@")
-        segmented_data_with_labels = get_segments_with_sliding_window(self.data_with_labels)
-        self.segmented_data_with_labels = remove_empty_segments(segmented_data_with_labels)
+        self.segmented_data_with_labels = get_segments_with_sliding_window(self.data_with_labels, window_size = sliding_window_size, stride = stride)
+        self.segmented_data_with_labels = remove_empty_segments(self.segmented_data_with_labels)
+        self.segmented_data_with_labels = infer_nans(self.segmented_data_with_labels)
+        self.segmented_data_with_labels = remove_segments_missing_positive(self.segmented_data_with_labels)
+
+    def prepare_data_test(self):
+        self.prepare_data(test=True)
 
     def set_hyper_params(self, HYPER_PARAMETERS: dict):
         self.hyper_params = HYPER_PARAMETERS

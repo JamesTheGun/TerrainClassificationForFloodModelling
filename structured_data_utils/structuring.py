@@ -8,7 +8,7 @@ import torch
 import json
 import os
 import glob
-from common.constants import POSITIVE_LAS_DIR, NEGATIVE_LAS_DIR, POSITIVE_GEOTIFF_DIR, NEGATIVE_GEOTIFF_DIR, COMBINED_GEOTIFF_DIR, COMBINED_LAS_DIR
+from common.constants import POSITIVE_LAS_DIR, NEGATIVE_LAS_DIR, POSITIVE_GEOTIFF_DIR, NEGATIVE_GEOTIFF_DIR, COMBINED_GEOTIFF_DIR, COMBINED_LAS_DIR, POSITIVE_TIFF_NAME, COMBINED_TIFF_NAME, DATA_LOCATION
 import rasterio
 import numpy as np
 
@@ -90,11 +90,14 @@ def tensor_and_offset_from_geotiff(geotiff_path: str) -> Tuple[torch.Tensor, Tup
     true_origin = get_geotiff_true_origin(geotiff_path)
     return tensor, true_origin
 
-def get_negative_geotiff_tensor_and_offset() -> Tuple[torch.Tensor, Tuple[int,int]]:
-    return tensor_and_offset_from_geotiff(NEGATIVE_GEOTIFF_DIR)
+def get_positive_geotiff_tensor_and_offset(folder: str, test: bool = False) -> Tuple[torch.Tensor, Tuple[int,int]]:
+    path = os.path.join(DATA_LOCATION, folder, POSITIVE_TIFF_NAME)
+    if test:
+        path = os.path.join(DATA_LOCATION, folder, POSITIVE_TIFF_NAME) #fix later
+    return tensor_and_offset_from_geotiff(path)
 
-def get_positive_geotiff_tensor_and_offset() -> Tuple[torch.Tensor, Tuple[int,int]]:
-    return tensor_and_offset_from_geotiff(POSITIVE_GEOTIFF_DIR)
-
-def get_combined_geotiff_tensor_and_offset() -> Tuple[torch.Tensor, Tuple[int,int]]:
-    return tensor_and_offset_from_geotiff(COMBINED_GEOTIFF_DIR)
+def get_combined_geotiff_tensor_and_offset(folder: str, test: bool = False) -> Tuple[torch.Tensor, Tuple[int,int]]:
+    path = os.path.join(DATA_LOCATION, folder, COMBINED_TIFF_NAME)
+    if test:
+        path = os.path.join(DATA_LOCATION, folder, POSITIVE_TIFF_NAME) #fix later
+    return tensor_and_offset_from_geotiff(path)
