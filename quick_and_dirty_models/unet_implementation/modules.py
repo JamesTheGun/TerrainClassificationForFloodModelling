@@ -70,17 +70,13 @@ class SimpleUnet(nn.Module):
 
         return self.final_conv(x)
 
-def train_model(datas: List[ModelData], num_epochs: int = 300, viz_every: int = 20, viz_steps: int = 1, pos_bias: float = 1.0, features: List[int] = [8, 16, 32, 64], lr_decay: float = 1.0001) -> SimpleUnet:
+def train_model(data: ModelData, num_epochs: int = 300, viz_every: int = 20, viz_steps: int = 1, pos_bias: float = 1.0, features: List[int] = [8, 16, 32], lr = 1e-3, lr_decay: float = 1.00003) -> SimpleUnet:
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = SimpleUnet(in_channels=1, out_channels=1, features = features).to(device)
 
     pos_weight = torch.tensor([pos_bias], device=device)
     criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-
-    lr = 1e-3
-
-    data = splice_datas(datas)
 
     for epoch in range(1, num_epochs + 1):
         model.train()
@@ -90,6 +86,11 @@ def train_model(datas: List[ModelData], num_epochs: int = 300, viz_every: int = 
             # Make (B,C,H,W) with B=C=1
             this_data = this_data.unsqueeze(0).unsqueeze(0).to(device).float()
             labels = labels.unsqueeze(0).unsqueeze(0).to(device).float()
+
+            if torch.isnan(this_data).any():
+                #print("WARNING: somehow a nan is in your data set!")
+                #print(torch.isnan(this_data))
+                continue
 
             logits = model(this_data)
             loss = criterion(logits, labels)
@@ -104,13 +105,14 @@ def train_model(datas: List[ModelData], num_epochs: int = 300, viz_every: int = 
             # Visualize during training (cheap, but switch to eval/no_grad)
             if (epoch % viz_every == 0) and (step < viz_steps):
                 print(f"Epoch {epoch}/{num_epochs} - loss: {epoch_loss:.4f}")
+                print(f"lr: {lr}")
                 model.eval()
                 with torch.no_grad():
                     v_logits = model(this_data)
                 show_sample(this_data, labels, v_logits, epoch=epoch, step=step)
                 model.train()
 
-        epoch_loss /= len(data.data_with_labels.data)
+        epoch_loss /= len(data.segmented_data_with_labels.data)
 
     return model
 
@@ -123,7 +125,7 @@ def test_model(model: SimpleUnet):
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    for step, (this_data, labels) in enumerate(data.segmented_data_with_labels.get_hacky_fold_iterable(fold_size=200)):
+    for step, (this_data, labels) in enumerate(data.segmented_data_with_labels.get_hacky_fold_iterable(fold_size=500)):
         #logits = model(data.data_with_labels)
         #criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
         #loss = criterion(logits, labels)
@@ -131,7 +133,6 @@ def test_model(model: SimpleUnet):
         #print("B")
         #print(this_data)
         this_data = this_data.unsqueeze(0).unsqueeze(0).to(device).float()
-        print(this_data)
         model.eval()
         with torch.no_grad():
             v_logits = model(this_data)

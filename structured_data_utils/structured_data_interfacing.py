@@ -4,7 +4,6 @@ from typing import List, Tuple
 from structured_data_utils.config.constants import ESPSG, GEOTIFF_LOCATIONS_TO_CORRESPONDING_STANDARDISED_LOCATION, RES, EMPTY_VAL
 from structured_data_utils.structuring import get_positive_geotiff_tensor_and_offset, get_combined_geotiff_tensor_and_offset
 from common.data_managment import DataWithLabels
-from structured_data_utils.data import ModelData
 import subprocess
 import torch.nn.functional as F
 from typing import TYPE_CHECKING
@@ -80,13 +79,14 @@ def put_nans_in_neggative_positions(data: torch.Tensor):
 
     data[outlier_mask] = torch.nan
 
-    print(outlier_mask)
-
     return data
 
 def load_data_with_labeles(folder_name: str, test = False) -> DataWithLabels:
     positive, offset_positive = get_positive_geotiff_tensor_and_offset(test, folder_name)
     combined, offset_combined = get_combined_geotiff_tensor_and_offset(test, folder_name)
+
+    print(offset_positive)
+    print(offset_combined)
 
     offset = (
         offset_positive[0] - offset_combined[0],
@@ -104,7 +104,7 @@ def load_data_with_labeles(folder_name: str, test = False) -> DataWithLabels:
     labels[0, pos_mask] = 1
  
     data = combined.clone()
-    data[0, pos_mask] = positive[0, pos_mask]
+    #data[0, pos_mask] = positive[0, pos_mask]
 
     return DataWithLabels(data, labels)
 
@@ -121,7 +121,6 @@ def get_segments_with_sliding_window(data_with_labels: DataWithLabels, window_si
     patches = patches.contiguous().view(-1, window_size, window_size)
     patch_labels = patch_labels.contiguous().view(-1, window_size, window_size)
     data_with_labels_out = DataWithLabels(patches, patch_labels)
-    print("ending")
     return data_with_labels_out
 
 def remove_empty_segments(data_with_labels: DataWithLabels) -> DataWithLabels:
@@ -134,101 +133,59 @@ def remove_empty_segments(data_with_labels: DataWithLabels) -> DataWithLabels:
     print(data_with_labels.data.shape)
     return data_with_labels
 
-def remove_segments_missing_positive(data_with_labels: DataWithLabels) -> DataWithLabels:
-    y = data_with_labels.labels
+def remove_segments_missing_positive(
+    data_with_labels: DataWithLabels,
+    keep_neg_prob: float = 0.1,
+) -> DataWithLabels:
+    y = data_with_labels.labels  # (N,H,W) or (N,1,H,W) or (N,C,H,W)
 
-    # Accept (N,H,W) or (N,1,H,W) or (N,C,H,W)
-    # Define "has any positive" per segment:
-    has_pos = (y > 0)
-    has_pos = has_pos.flatten(start_dim=1).any(dim=1)  # (N,)
+    # Has at least one positive per segment
+    has_pos = (y > 0).flatten(start_dim=1).any(dim=1)  # (N,)
 
-    return DataWithLabels(data_with_labels.data[has_pos], y[has_pos])
+    # Randomly keep some negative-only segments
+    keep_neg = torch.rand(y.shape[0], device=y.device) < keep_neg_prob
 
-def infer_nans(dwl: DataWithLabels, max_iters: int = 50) -> DataWithLabels:
-    """
-    Fill NaNs by iteratively averaging valid 4-neighbors (N/S/E/W).
-    Uses conv2d + a validity mask for speed (GPU-friendly).
-    Handles contiguous NaN regions by iterating until they get a boundary.
-    """
-    x0 = dwl.data
-    if not x0.is_floating_point():
-        x0 = x0.float()
-    x = x0.clone()
+    keep = has_pos | keep_neg  # elementwise OR
 
-    # Support (H,W), (C,H,W), (B,C,H,W)
-    if x.ndim == 2:
-        x4 = x[None, None]          # (1,1,H,W)
-        squeeze_mode = "HW"
-    elif x.ndim == 3:
-        x4 = x[None]                 # (1,C,H,W)
-        squeeze_mode = "CHW"
-    elif x.ndim == 4:
-        x4 = x                       # (B,C,H,W)
-        squeeze_mode = None
-    else:
-        raise ValueError(f"Expected 2D/3D/4D tensor, got {tuple(x.shape)}")
+    return DataWithLabels(
+        data_with_labels.data[keep],
+        y[keep],
+    )
 
-    device, dtype = x4.device, x4.dtype
-    C = x4.shape[1]
+def bloat_positives(dwl: DataWithLabels):
+    data = dwl.data
+    labels = dwl.labels
 
-    # 4-neighbor kernel (no wrap-around, unlike torch.roll)
-    k = torch.tensor([[0, 1, 0],
-                      [1, 0, 1],
-                      [0, 1, 0]], device=device, dtype=dtype)[None, None]
-    k = k.repeat(C, 1, 1, 1)  # depthwise: (C,1,3,3)
+    rotations_data = [torch.rot90(data, k=k, dims=(1,2)) for k in range(4)]
+    rotations_labels = [torch.rot90(labels, k=k, dims=(1,2)) for k in range(4)]
 
-    for _ in range(max_iters):
-        nan_mask = torch.isnan(x4)
-        if not nan_mask.any():
-            break
+    bloated_data = torch.cat(rotations_data, dim = 0)
+    bloated_labels = torch.cat(rotations_labels, dim = 0)
 
-        valid = (~nan_mask).to(dtype)
-        x_filled = torch.nan_to_num(x4, nan=0.0)
+    return DataWithLabels(bloated_data, bloated_labels)
 
-        # Sum/count of valid neighbors
-        summed = F.conv2d(x_filled, k, padding=1, groups=C)
-        count  = F.conv2d(valid,    k, padding=1, groups=C)
-
-        can_fill = nan_mask & (count > 0)
-        if not can_fill.any():
-            break
-
-        fill = summed / count.clamp_min(1.0)
-        x4 = torch.where(can_fill, fill, x4)
-
-    # Restore original shape
-    if squeeze_mode == "HW":
-        out = x4[0, 0]
-    elif squeeze_mode == "CHW":
-        out = x4[0]
-    else:
-        out = x4
-
+def infer_nans(dwl: DataWithLabels) -> DataWithLabels:
+    x = dwl.data
+    mean = torch.nanmean(x)
+    out = torch.where(torch.isnan(x), mean, x)
     return DataWithLabels(out, dwl.labels)
 
-def splice_tensors(tensors: List[torch.Tensor]):
-    torch.stack(tensors, dim=1).reshape(-1, *tensors[0].shape[1:])
+def splice_tensors(tensors: List[torch.Tensor], seed: int = 0) -> torch.Tensor:
+    n_max = max(t.shape[0] for t in tensors)
+    g = torch.Generator(device="cpu").manual_seed(seed)
 
-def splice_datas(datas: List[ModelData]):
+    balanced = []
+    for t in tensors:
+        n = t.shape[0]
+        if n == n_max:
+            balanced.append(t)
+        else:
+            idx = torch.randint(0, n, (n_max,), generator=g, device="cpu").to(t.device)
+            balanced.append(t.index_select(0, idx))
 
-    data_with_labels: DataWithLabels = ModelData.data_with_labels
-
-    data = data_with_labels.data
-
-    labels = data_with_labels.labels
-
-    out_data_segmented = splice_tensors()
-    out_labels_segmented = splice_tensors()
-
-    out_data = splice_tensors()
-    out_labels = splice_tensors()
-
-    out_data_with_labels_segmented = DataWithLabels(out_data_segmented, out_labels_segmented)
-
-    out_model_data = ModelData()
-
-    return out
-
+    x = torch.cat(balanced, dim=0)
+    perm = torch.randperm(x.shape[0], generator=g, device="cpu").to(x.device)
+    return x.index_select(0, perm)
 
 def generate_train_test_sets(labeled_tensor: torch.Tensor):
     pass
