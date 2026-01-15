@@ -118,8 +118,6 @@ def train_model(data: ModelData, num_epochs: int = 300, viz_every: int = 20, viz
 
 def test_model(model: SimpleUnet):
 
-    standardise_core_geotiffs()
-
     data = ModelData()
     data.prepare_data_test()
     

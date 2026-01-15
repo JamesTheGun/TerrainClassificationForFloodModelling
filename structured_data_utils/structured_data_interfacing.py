@@ -1,7 +1,8 @@
 
+import os
 import torch
 from typing import List, Tuple
-from structured_data_utils.config.constants import ESPSG, GEOTIFF_LOCATIONS_TO_CORRESPONDING_STANDARDISED_LOCATION, RES, EMPTY_VAL
+from structured_data_utils.config.constants import ESPSG, RES, EMPTY_VAL, STANDARDISATION_TARGET_TIFFS
 from structured_data_utils.structuring import get_positive_geotiff_tensor_and_offset, get_combined_geotiff_tensor_and_offset
 from common.data_managment import DataWithLabels
 import subprocess
@@ -10,7 +11,11 @@ from typing import TYPE_CHECKING
 
 import random
 
-def standardise_geotiff_with_res_noise(target_dir: str, write_dir: str, noise_frac: float):
+def standardise_geotiff_with_res_noise(target_dir: str, write_dir: str, noise_frac: float, force: bool = False):
+    if os.path.exists(write_dir) and not force:
+        print(f"Standardised file already exists at {write_dir}. Skipping. Use force=True to override.")
+        return
+    
     base = float(RES)
     jitter = random.uniform(-noise_frac, noise_frac)
     res = base * (1.0 + jitter)
@@ -33,7 +38,11 @@ def standardise_geotiff_with_res_noise(target_dir: str, write_dir: str, noise_fr
     if p.returncode != 0:
         raise RuntimeError(p.stderr)
 
-def standardise_geotiff(target_dir: str, write_dir: str):
+def standardise_geotiff(target_path: str, write_path: str, force: bool = False):
+    if os.path.exists(write_path) and not force:
+        print(f"Standardised file already exists at {write_path}. Skipping. Use force=True to override.")
+        return
+    
     p = subprocess.run(
         [
             "gdalwarp",
@@ -43,8 +52,8 @@ def standardise_geotiff(target_dir: str, write_dir: str):
             "-r", "bilinear",      # use "near" for masks/classes
             "-of", "GTiff",
             "-overwrite",
-            target_dir,
-            write_dir,
+            target_path,
+            write_path,
         ],
         capture_output=True,
         text=True,
@@ -53,9 +62,14 @@ def standardise_geotiff(target_dir: str, write_dir: str):
     if p.returncode != 0:
         raise RuntimeError(p.stderr)
 
-def standardise_core_geotiffs():
-    for target, write_dir in GEOTIFF_LOCATIONS_TO_CORRESPONDING_STANDARDISED_LOCATION.items():
-        standardise_geotiff(target, write_dir)
+def standardise_dataset(dataset_name: str, force: bool = False):
+    standardise_folder(os.path.join("data", dataset_name), force=force)
+
+def standardise_folder(dir: str, force: bool = False):
+    for tiff in STANDARDISATION_TARGET_TIFFS:
+        tiff_path = os.path.join(dir, tiff)
+        write_path = tiff_path.replace(".tif", "_STANDARDISED.tif")
+        standardise_geotiff(tiff_path, write_path, force=force)
 
 def offset_meters_to_offset_pixels(offset):
     print(offset[0]/float(RES))
@@ -67,9 +81,12 @@ def pad_pos_mask_to_match(pos_tensor: torch.Tensor, other_tensor: torch.Tensor, 
     pad_x = other_tensor.shape[-1] - pos_tensor.shape[-1]
     pad_y = other_tensor.shape[-2] - pos_tensor.shape[-2]
 
+    print(f"pad_x: {pad_x}, pad_y: {pad_y}")
+
     padded = F.pad(pos_tensor, (0, pad_x, 0, pad_y), mode="constant", value=EMPTY_VAL)
     pixel_offset = offset_meters_to_offset_pixels(offset)
     #padded = torch.roll(padded, shifts = pixel_offset, dims=(-2,-1))
+    assert (padded.shape == other_tensor.shape), f"padded shape {padded.shape} does not match other tensor shape {other_tensor.shape}"
     padded = torch.roll(padded, shifts = pixel_offset[0], dims=1)
     padded = torch.roll(padded, shifts = pixel_offset[1], dims=0)
     return padded
@@ -82,16 +99,18 @@ def put_nans_in_neggative_positions(data: torch.Tensor):
     return data
 
 def load_data_with_labeles(folder_name: str, test = False) -> DataWithLabels:
-    positive, offset_positive = get_positive_geotiff_tensor_and_offset(test, folder_name)
-    combined, offset_combined = get_combined_geotiff_tensor_and_offset(test, folder_name)
+    positive, offset_positive = get_positive_geotiff_tensor_and_offset(folder_name, test)
+    combined, offset_combined = get_combined_geotiff_tensor_and_offset(folder_name, test)
 
-    print(offset_positive)
-    print(offset_combined)
+    print(f"offset positive:        {offset_positive}")
+    print(f"offset combined:        {offset_combined}")
 
     offset = (
         offset_positive[0] - offset_combined[0],
         offset_combined[1] - offset_positive[1],
     )
+    print("offset:")
+    print(offset)
 
     positive = pad_pos_mask_to_match(positive, combined, offset)
     positive = positive.unsqueeze(0)

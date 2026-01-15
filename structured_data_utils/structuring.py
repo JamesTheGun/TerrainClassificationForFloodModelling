@@ -85,11 +85,9 @@ def get_geotiff_true_origin(geotiff_path: str) -> Tuple[int, int]:
 def tensor_and_offset_from_geotiff(geotiff_path: str) -> Tuple[torch.Tensor, Tuple[int,int]]:
     with rasterio.open(geotiff_path) as reader:
         data = reader.read(masked=True)
-        crs_src = reader.crs
     data = data[0] #we take only the first band -- WE ASSUME THIS IS ELEVATION! TO DO: include this important detail in read me!
     tensor = torch.from_numpy(data).float()
     true_origin = get_geotiff_true_origin(geotiff_path)
-    print(f"[DEBUG] CRS for {geotiff_path.split('/')[-1]}: {crs_src}")
     return tensor, true_origin
 
 def get_positive_geotiff_tensor_and_offset(folder: str, test: bool = False) -> Tuple[torch.Tensor, Tuple[int,int]]:

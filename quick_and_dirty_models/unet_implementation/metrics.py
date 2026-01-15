@@ -51,6 +51,19 @@ def show_sample(x, y, logits, epoch: int, step: int = 0, threshold: float = 0.5)
     p0 = torch.sigmoid(logits[0, 0])
     pred0 = (p0 > threshold).float()
 
-    titles = ["Input", "Label", "Pred prob (sigmoid)", f"Pred mask > {threshold}"]
-    suptitle = f"Epoch {epoch}  Step {step}"
-    show_matrices([x0, y0, p0, pred0], titles=titles, suptitle=suptitle, cmap="gray", vmin=0, vmax=1)
+    # Display input with its natural range, others with [0,1]
+    fig, axes = plt.subplots(1, 4, figsize=(16, 4))
+    
+    axes[0].imshow(x0.detach().cpu().numpy(), cmap="gray")
+    axes[0].set_title("Input")
+    axes[0].axis("off")
+    
+    for i, (mat, title) in enumerate(zip([y0, p0, pred0], 
+                                         ["Label", "Pred prob (sigmoid)", f"Pred mask > {threshold}"]), 1):
+        axes[i].imshow(mat.detach().cpu().numpy(), cmap="gray", vmin=0, vmax=1)
+        axes[i].set_title(title)
+        axes[i].axis("off")
+    
+    plt.suptitle(f"Epoch {epoch}  Step {step}")
+    plt.tight_layout()
+    plt.show()

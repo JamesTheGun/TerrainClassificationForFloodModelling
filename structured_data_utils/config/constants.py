@@ -5,11 +5,7 @@ RES = "0.5"
 #seperate standardised files if we make the geotifs anyway?"
 #Its because we will want to run on geotiffs we have not made
 #going forwards, and this keeps the pipeline consistant
-GEOTIFF_LOCATIONS_TO_CORRESPONDING_STANDARDISED_LOCATION = {
-    "data/POSITIVE.tif":"data/POSITIVE_STANDARDISED.tif",
-    "data/NEGATIVE.tif":"data/NEGATIVE_STANDARDISED.tif",
-    "data/COMBINED.tif":"data/COMBINED_STANDARDISED.tif",
-    "data/TEST_TIFF.tif":"data/COMBINED_TEST_STANDARDISED.tif",
-}
+
+STANDARDISATION_TARGET_TIFFS = ["POSITIVE.tif", "COMBINED.tif"]
 
 EMPTY_VAL = -9999
