@@ -125,10 +125,6 @@ def test_model_on_model_data(model: SimpleUnet, test_data: ModelData):
     
     model.eval()
     model.to(device)
-
-    print("HERE:")
-
-    print(test_data.segmented_data_with_labels.get_hacky_fold_iterable())
     
     for data, empty_labels in test_data.segmented_data_with_labels.get_hacky_fold_iterable():
         data = data.unsqueeze(0).unsqueeze(0).to(device).float()

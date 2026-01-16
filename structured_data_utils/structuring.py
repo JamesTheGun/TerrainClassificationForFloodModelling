@@ -101,3 +101,21 @@ def get_positive_geotiff_tensor_and_offset(folder: str) -> Tuple[torch.Tensor, T
 def get_combined_geotiff_tensor_and_offset(folder: str) -> Tuple[torch.Tensor, Tuple[int,int]]:
     path = os.path.join(DATA_LOCATION, folder, COMBINED_TIFF_NAME)
     return tensor_and_offset_from_geotiff(path)
+
+def retrieve_dataset_EPSG(folder: str) -> int:
+    combined_path = os.path.join(DATA_LOCATION, folder, COMBINED_TIFF_NAME)
+    positive_path = os.path.join(DATA_LOCATION, folder, POSITIVE_TIFF_NAME)
+    
+    with rasterio.open(combined_path) as reader:
+        combined_epsg = reader.crs.to_epsg()
+
+    if os.path.exists(positive_path):
+        with rasterio.open(positive_path) as reader:
+            positive_epsg = reader.crs.to_epsg()
+        
+        if combined_epsg != positive_epsg:
+            raise ValueError(
+                f"EPSG mismatch: {COMBINED_TIFF_NAME} has EPSG:{combined_epsg}, {POSITIVE_TIFF_NAME} has EPSG:{positive_epsg}."
+            )
+    return combined_epsg
+    

@@ -3,8 +3,8 @@ import os
 import torch
 from typing import List, Tuple
 from structured_data_utils.config.constants import ESPSG, RES, EMPTY_VAL, STANDARDISATION_TARGET_TIFFS
-from structured_data_utils.structuring import get_positive_geotiff_tensor_and_offset, get_combined_geotiff_tensor_and_offset
-from common.data_managment import DataWithLabels
+from structured_data_utils.structuring import get_positive_geotiff_tensor_and_offset, get_combined_geotiff_tensor_and_offset, retrieve_dataset_EPSG
+from common.data_managment import DataWithLabels, SegmentedDataWithLabels
 import subprocess
 import torch.nn.functional as F
 from typing import TYPE_CHECKING
@@ -109,14 +109,14 @@ def pad_pos_mask_to_match(pos_tensor: torch.Tensor, other_tensor: torch.Tensor, 
     padded = torch.roll(padded, shifts = pixel_offset[1], dims=0)
     return padded
 
-def put_nans_in_neggative_positions(data: torch.Tensor):
+def put_nans_in_neggative_positions(data: torch.Tensor) -> torch.Tensor:
     outlier_mask = data < 0
 
     data[outlier_mask] = torch.nan
 
     return data
 
-def load_data_with_labeles(folder_name: str) -> DataWithLabels:
+def load_data_with_labels(folder_name: str) -> DataWithLabels:
     positive, offset_positive = get_positive_geotiff_tensor_and_offset(folder_name)
     combined, offset_combined = get_combined_geotiff_tensor_and_offset(folder_name)
 
@@ -134,13 +134,12 @@ def load_data_with_labeles(folder_name: str) -> DataWithLabels:
     pos_mask = positive[0] != EMPTY_VAL
 
     labels[0, pos_mask] = 1
- 
-    data = combined.clone()
-    #data[0, pos_mask] = positive[0, pos_mask]
+    
+    epsg = retrieve_dataset_EPSG(folder_name)
 
-    return DataWithLabels(data, labels)
+    return DataWithLabels(combined, labels, epsg, offset_combined, RES)
 
-def get_segments_with_sliding_window(data_with_labels: DataWithLabels, window_size=300, stride=300) -> DataWithLabels:
+def get_segments_with_sliding_window(data_with_labels: DataWithLabels, window_size=300, stride=300) -> SegmentedDataWithLabels:
     print("starting")
     patches = (
         data_with_labels.data.unfold(1, window_size, stride)
@@ -152,23 +151,23 @@ def get_segments_with_sliding_window(data_with_labels: DataWithLabels, window_si
     )
     patches = patches.contiguous().view(-1, window_size, window_size)
     patch_labels = patch_labels.contiguous().view(-1, window_size, window_size)
-    data_with_labels_out = DataWithLabels(patches, patch_labels)
+    data_with_labels_out = SegmentedDataWithLabels(patches, patch_labels)
     return data_with_labels_out
 
-def remove_empty_segments(data_with_labels: DataWithLabels) -> DataWithLabels:
+def remove_empty_segments(data_with_labels: SegmentedDataWithLabels) -> SegmentedDataWithLabels:
     print(data_with_labels.data.shape)
     not_empty = ~torch.isnan(data_with_labels.data)
     mean_occupied = not_empty.float().mean(dim=(1,2))
     print(mean_occupied)
     mask = mean_occupied > 0.8
-    data_with_labels = DataWithLabels(data_with_labels.data[mask], data_with_labels.labels[mask])
+    data_with_labels = SegmentedDataWithLabels(data_with_labels.data[mask], data_with_labels.labels[mask])
     print(data_with_labels.data.shape)
     return data_with_labels
 
 def remove_segments_missing_positive(
-    data_with_labels: DataWithLabels,
+    data_with_labels: SegmentedDataWithLabels,
     keep_neg_prob: float = 0.1,
-) -> DataWithLabels:
+) -> SegmentedDataWithLabels:
     y = data_with_labels.labels  # (N,H,W) or (N,1,H,W) or (N,C,H,W)
 
     # Has at least one positive per segment
@@ -179,12 +178,12 @@ def remove_segments_missing_positive(
 
     keep = has_pos | keep_neg  # elementwise OR
 
-    return DataWithLabels(
+    return SegmentedDataWithLabels(
         data_with_labels.data[keep],
         y[keep],
     )
 
-def bloat_positives(dwl: DataWithLabels):
+def bloat_positives(dwl: SegmentedDataWithLabels):
     data = dwl.data
     labels = dwl.labels
 
@@ -194,13 +193,13 @@ def bloat_positives(dwl: DataWithLabels):
     bloated_data = torch.cat(rotations_data, dim = 0)
     bloated_labels = torch.cat(rotations_labels, dim = 0)
 
-    return DataWithLabels(bloated_data, bloated_labels)
+    return SegmentedDataWithLabels(bloated_data, bloated_labels)
 
-def infer_nans(dwl: DataWithLabels) -> DataWithLabels:
+def infer_nans_segmented(dwl: SegmentedDataWithLabels) -> SegmentedDataWithLabels:
     x = dwl.data
     mean = torch.nanmean(x)
     out = torch.where(torch.isnan(x), mean, x)
-    return DataWithLabels(out, dwl.labels)
+    return SegmentedDataWithLabels(out, dwl.labels)
 
 def splice_tensors(tensors: List[torch.Tensor], seed: int = 0) -> torch.Tensor:
     n_max = max(t.shape[0] for t in tensors)
