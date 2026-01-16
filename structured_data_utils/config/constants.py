@@ -1,5 +1,5 @@
 ESPSG = "EPSG:7856" #we are just going to assume everything is in aus...
-RES = "0.5"
+RES = "2"
 
 #you might be asking, "why the fuck do we have
 #seperate standardised files if we make the geotifs anyway?"

@@ -1,11 +1,12 @@
 from typing import List
 
+import os
 import torch
 from torch import nn
 import torch.nn.functional as F
 from quick_and_dirty_models.unet_implementation.metrics import show_sample
 from structured_data_utils.data import ModelData
-from structured_data_utils.structured_data_interfacing import standardise_core_geotiffs
+from structured_data_utils.structuring import tensor_and_offset_from_geotiff
 
 class SimpleUnet(nn.Module):
     class Block(nn.Module):
@@ -116,26 +117,60 @@ def train_model(data: ModelData, num_epochs: int = 300, viz_every: int = 20, viz
 
     return model
 
-def test_model(model: SimpleUnet):
+def test_model_on_model_data(model: SimpleUnet, test_data: ModelData):
 
-    data = ModelData()
-    data.prepare_data_test()
+    from quick_and_dirty_models.unet_implementation.metrics import show_matrices
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    model.eval()
+    model.to(device)
 
-    for step, (this_data, labels) in enumerate(data.segmented_data_with_labels.get_hacky_fold_iterable(fold_size=500)):
-        #logits = model(data.data_with_labels)
-        #criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-        #loss = criterion(logits, labels)
-        #print(loss)
-        #print("B")
-        #print(this_data)
-        this_data = this_data.unsqueeze(0).unsqueeze(0).to(device).float()
-        model.eval()
+    print("HERE:")
+
+    print(test_data.segmented_data_with_labels.get_hacky_fold_iterable())
+    
+    for data, empty_labels in test_data.segmented_data_with_labels.get_hacky_fold_iterable():
+        data = data.unsqueeze(0).unsqueeze(0).to(device).float()
         with torch.no_grad():
-            v_logits = model(this_data)
+            logits = model(data)
 
-        print("C")
-        labels = labels.unsqueeze(0).unsqueeze(0).to(device).float()
-        show_sample(this_data, labels, v_logits, epoch=69, step=step)
+        probs = torch.sigmoid(logits)
+        pred_binary = (probs > 0.5).float()
 
+        print(f"Prediction probability range: [{probs.min():.4f}, {probs.max():.4f}]")
+
+        show_matrices(
+            [data[0, 0], probs[0, 0], pred_binary[0, 0]],
+            titles=["Input Data", "Prediction Probability", "Binary Prediction (>0.5)"],
+            suptitle=f"Model Test Predictions",
+            vmin=None,  # Input uses natural range, predictions use [0,1]
+            vmax=None
+        )
+
+
+def test_model_visual(model: SimpleUnet, test_data_file: str = None):
+    """Visualize model predictions on test data.
+    
+    Loads COMBINED_STANDARDISED geotiff from TEST_SET folder by default,
+    or a specific file if provided. No ground truth available.
+    The user can visually inspect the model's predictions.
+    
+    Args:
+        model: Trained SimpleUnet model
+        test_data_file: Optional specific geotiff file to test on.
+                       Defaults to data/TEST_SET/COMBINED_STANDARDISED.tif
+    """
+    import os
+
+    if test_data_file is None:
+        test_data_file =  "COMBINED_STANDARDISED.tif"
+    test_data_file = os.path.join("data", "TEST_SET", test_data_file)
+
+    from structured_data_utils.data import ModelData
+
+    test_data_model = ModelData()
+    test_data_model.prepare_data("TEST_SET")
+    print("If you got the warning about an empty tensor, that's expected for the test set.")
+
+    test_model_on_model_data(model, test_data_model)

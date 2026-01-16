@@ -62,11 +62,29 @@ def standardise_geotiff(target_path: str, write_path: str, force: bool = False):
     if p.returncode != 0:
         raise RuntimeError(p.stderr)
 
-def standardise_dataset(dataset_name: str, force: bool = False):
-    standardise_folder(os.path.join("data", dataset_name), force=force)
+def standardise_dataset(dataset_name: str, force: bool = False, target_files: list = None):
+    """Standardise dataset geotiffs.
+    
+    Args:
+        dataset_name: Name of dataset folder in data/
+        force: Force re-standardisation if file already exists
+        target_files: Optional list of specific filenames to standardise.
+                     If None, standardises all files in STANDARDISATION_TARGET_TIFFS
+    """
+    standardise_folder(os.path.join("data", dataset_name), force=force, target_files=target_files)
 
-def standardise_folder(dir: str, force: bool = False):
-    for tiff in STANDARDISATION_TARGET_TIFFS:
+def standardise_folder(dir: str, force: bool = False, target_files: list = None):
+    """Standardise all geotiffs in a folder.
+    
+    Args:
+        dir: Directory containing geotiffs
+        force: Force re-standardisation if file already exists
+        target_files: Optional list of specific filenames to standardise.
+                     If None, standardises all files in STANDARDISATION_TARGET_TIFFS
+    """
+    files_to_process = target_files if target_files is not None else STANDARDISATION_TARGET_TIFFS
+    
+    for tiff in files_to_process:
         tiff_path = os.path.join(dir, tiff)
         write_path = tiff_path.replace(".tif", "_STANDARDISED.tif")
         standardise_geotiff(tiff_path, write_path, force=force)
@@ -98,19 +116,14 @@ def put_nans_in_neggative_positions(data: torch.Tensor):
 
     return data
 
-def load_data_with_labeles(folder_name: str, test = False) -> DataWithLabels:
-    positive, offset_positive = get_positive_geotiff_tensor_and_offset(folder_name, test)
-    combined, offset_combined = get_combined_geotiff_tensor_and_offset(folder_name, test)
-
-    print(f"offset positive:        {offset_positive}")
-    print(f"offset combined:        {offset_combined}")
+def load_data_with_labeles(folder_name: str) -> DataWithLabels:
+    positive, offset_positive = get_positive_geotiff_tensor_and_offset(folder_name)
+    combined, offset_combined = get_combined_geotiff_tensor_and_offset(folder_name)
 
     offset = (
         offset_positive[0] - offset_combined[0],
         offset_combined[1] - offset_positive[1],
     )
-    print("offset:")
-    print(offset)
 
     positive = pad_pos_mask_to_match(positive, combined, offset)
     positive = positive.unsqueeze(0)

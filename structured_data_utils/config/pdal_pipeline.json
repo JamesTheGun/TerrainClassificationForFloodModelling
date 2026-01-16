@@ -4,7 +4,7 @@
         {
             "type": "writers.gdal",
             "filename": "PLACEHOLDER_OUT",
-            "resolution": 0.5,
+            "resolution": 1,
             "dimension": "Z",
             "output_type": "mean",
             "gdaldriver": "GTiff",

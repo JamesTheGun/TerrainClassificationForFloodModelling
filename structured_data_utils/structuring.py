@@ -90,14 +90,14 @@ def tensor_and_offset_from_geotiff(geotiff_path: str) -> Tuple[torch.Tensor, Tup
     true_origin = get_geotiff_true_origin(geotiff_path)
     return tensor, true_origin
 
-def get_positive_geotiff_tensor_and_offset(folder: str, test: bool = False) -> Tuple[torch.Tensor, Tuple[int,int]]:
+def get_positive_geotiff_tensor_and_offset(folder: str) -> Tuple[torch.Tensor, Tuple[int,int]]:
     path = os.path.join(DATA_LOCATION, folder, POSITIVE_TIFF_NAME)
-    if test:
-        path = os.path.join(DATA_LOCATION, "TEST_SET", "COMBINED_STANDARDISED_TEST.tif") #fix later
+    if not os.path.exists(path):
+        print(f"Positive geotiff not found at: {path}. Using empty tensor and offset for pos class (0,0).")
+        empty_tensor = torch.zeros((1,1))
+        return empty_tensor, (0,0)
     return tensor_and_offset_from_geotiff(path)
 
-def get_combined_geotiff_tensor_and_offset(folder: str, test: bool = False) -> Tuple[torch.Tensor, Tuple[int,int]]:
+def get_combined_geotiff_tensor_and_offset(folder: str) -> Tuple[torch.Tensor, Tuple[int,int]]:
     path = os.path.join(DATA_LOCATION, folder, COMBINED_TIFF_NAME)
-    if test:
-        path = os.path.join(DATA_LOCATION, "TEST_SET", "COMBINED_STANDARDISED_TEST.tif")#fix later
     return tensor_and_offset_from_geotiff(path)
