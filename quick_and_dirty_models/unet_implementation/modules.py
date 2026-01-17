@@ -146,17 +146,6 @@ def test_model_on_model_data(model: SimpleUnet, test_data: ModelData):
 
 
 def test_model_visual(model: SimpleUnet, test_data_file: str = None):
-    """Visualize model predictions on test data.
-    
-    Loads COMBINED_STANDARDISED geotiff from TEST_SET folder by default,
-    or a specific file if provided. No ground truth available.
-    The user can visually inspect the model's predictions.
-    
-    Args:
-        model: Trained SimpleUnet model
-        test_data_file: Optional specific geotiff file to test on.
-                       Defaults to data/TEST_SET/COMBINED_STANDARDISED.tif
-    """
     import os
 
     if test_data_file is None:
