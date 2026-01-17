@@ -4,9 +4,9 @@ import os
 import torch
 from torch import nn
 import torch.nn.functional as F
-from quick_and_dirty_models.unet_implementation.metrics import show_sample
+from model_prototyping.unet_implementation.metrics import show_sample
 from structured_data_utils.data import ModelData
-from structured_data_utils.structuring import tensor_and_offset_from_geotiff
+from structured_data_utils.structured_data_interfacing import tensor_and_offset_from_geotiff
 
 class SimpleUnet(nn.Module):
     class Block(nn.Module):
@@ -119,7 +119,7 @@ def train_model(data: ModelData, num_epochs: int = 300, viz_every: int = 20, viz
 
 def test_model_on_model_data(model: SimpleUnet, test_data: ModelData):
 
-    from quick_and_dirty_models.unet_implementation.metrics import show_matrices
+    from model_prototyping.unet_implementation.metrics import show_matrices
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     

@@ -3,40 +3,15 @@ import os
 import torch
 from typing import List, Tuple
 from structured_data_utils.config.constants import ESPSG, RES, EMPTY_VAL, STANDARDISATION_TARGET_TIFFS
-from structured_data_utils.structuring import get_positive_geotiff_tensor_and_offset, get_combined_geotiff_tensor_and_offset, retrieve_dataset_EPSG
 from common.data_managment import DataWithLabels, SegmentedDataWithLabels
+from common.constants import POSITIVE_LAS_DIR, NEGATIVE_LAS_DIR, POSITIVE_GEOTIFF_DIR, NEGATIVE_GEOTIFF_DIR, COMBINED_GEOTIFF_DIR, COMBINED_LAS_DIR, POSITIVE_TIFF_NAME, COMBINED_TIFF_NAME, DATA_LOCATION
 import subprocess
 import torch.nn.functional as F
 from typing import TYPE_CHECKING
+import rasterio
+from affine import Affine
 
 import random
-
-def standardise_geotiff_with_res_noise(target_dir: str, write_dir: str, noise_frac: float, force: bool = False):
-    if os.path.exists(write_dir) and not force:
-        print(f"Standardised file already exists at {write_dir}. Skipping. Use force=True to override.")
-        return
-    
-    base = float(RES)
-    jitter = random.uniform(-noise_frac, noise_frac)
-    res = base * (1.0 + jitter)
-
-    p = subprocess.run(
-        [
-            "gdalwarp",
-            "-t_srs", ESPSG,
-            "-tr", f"{res}", f"{res}",   # noise here
-            "-tap",                      # optional; aligns to this file’s res grid
-            "-r", "bilinear",
-            "-of", "GTiff",
-            "-overwrite",
-            target_dir,
-            write_dir,
-        ],
-        capture_output=True,
-        text=True,
-    )
-    if p.returncode != 0:
-        raise RuntimeError(p.stderr)
 
 def standardise_geotiff(target_path: str, write_path: str, force: bool = False):
     if os.path.exists(write_path) and not force:
@@ -223,3 +198,50 @@ def generate_train_test_sets(labeled_tensor: torch.Tensor):
 
 def generate_folds(labeled_tensor: torch.Tensor) -> List[torch.Tensor]:
     pass
+
+def get_geotiff_true_origin(geotiff_path: str) -> Tuple[int, int]:
+    with rasterio.open(geotiff_path) as reader:
+        transform: Affine = reader.transform
+
+        x_origin: int
+        y_origin: int
+        x_origin, y_origin = transform * (0, 0)
+
+    return int(x_origin), int(y_origin)
+
+def tensor_and_offset_from_geotiff(geotiff_path: str) -> Tuple[torch.Tensor, Tuple[int,int]]:
+    with rasterio.open(geotiff_path) as reader:
+        data = reader.read(masked=True)
+    data = data[0] #we take only the first band -- WE ASSUME THIS IS ELEVATION! TO DO: include this important detail in read me!
+    tensor = torch.from_numpy(data).float()
+    true_origin = get_geotiff_true_origin(geotiff_path)
+    return tensor, true_origin
+
+def get_positive_geotiff_tensor_and_offset(folder: str) -> Tuple[torch.Tensor, Tuple[int,int]]:
+    path = os.path.join(DATA_LOCATION, folder, POSITIVE_TIFF_NAME)
+    if not os.path.exists(path):
+        print(f"Positive geotiff not found at: {path}. Using empty tensor and offset for pos class (0,0).")
+        empty_tensor = torch.zeros((1,1))
+        return empty_tensor, (0,0)
+    return tensor_and_offset_from_geotiff(path)
+
+def get_combined_geotiff_tensor_and_offset(folder: str) -> Tuple[torch.Tensor, Tuple[int,int]]:
+    path = os.path.join(DATA_LOCATION, folder, COMBINED_TIFF_NAME)
+    return tensor_and_offset_from_geotiff(path)
+
+def retrieve_dataset_EPSG(folder: str) -> int:
+    combined_path = os.path.join(DATA_LOCATION, folder, COMBINED_TIFF_NAME)
+    positive_path = os.path.join(DATA_LOCATION, folder, POSITIVE_TIFF_NAME)
+    
+    with rasterio.open(combined_path) as reader:
+        combined_epsg = reader.crs.to_epsg()
+
+    if os.path.exists(positive_path):
+        with rasterio.open(positive_path) as reader:
+            positive_epsg = reader.crs.to_epsg()
+        
+        if combined_epsg != positive_epsg:
+            raise ValueError(
+                f"EPSG mismatch: {COMBINED_TIFF_NAME} has EPSG:{combined_epsg}, {POSITIVE_TIFF_NAME} has EPSG:{positive_epsg}."
+            )
+    return combined_epsg

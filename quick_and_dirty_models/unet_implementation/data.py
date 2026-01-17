@@ -1,1 +1,0 @@
-from structured_data_utils.data import ModelData
