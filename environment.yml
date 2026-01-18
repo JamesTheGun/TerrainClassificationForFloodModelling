@@ -15,7 +15,7 @@ dependencies:
   - numpy
   - pandas
   - scipy
-  - scikit-learn
+  - scikit-learn0
   - tqdm
   - matplotlib
   - seaborn

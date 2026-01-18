@@ -1,0 +1,14 @@
+{
+    "pipeline": [
+        "PLACEHOLDER_LAS",
+        {
+            "type": "writers.gdal",
+            "filename": "PLACEHOLDER_OUT",
+            "resolution": 1,
+            "dimension": "Z",
+            "output_type": "mean",
+            "gdaldriver": "GTiff",
+            "data_type": "float32"
+        }
+    ]
+}

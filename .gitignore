@@ -1,5 +1,12 @@
 *.las
 *.laz
+*.tif
+*.xml
+*.aux
 data/*.las
 data/*.laz
+data/*.las
+data/*.tif
+data/*.xml
+data/*.aux
 .vscode
