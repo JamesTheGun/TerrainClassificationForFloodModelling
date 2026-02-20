@@ -15,17 +15,42 @@ from rasterio.merge import merge
 # basically this entire area needs a rethink, probs revert to earler version
 
 
+def check_params_sdwl(data: torch.Tensor, labels: torch.Tensor):
+    assert (
+        type(data) == torch.Tensor
+    ), f"data should be a torch.Tensor but got {type(data)}"
+    assert (
+        type(labels) == torch.Tensor
+    ), f"labels should be a torch.Tensor but got {type(labels)}"
+    assert (
+        data.shape == labels.shape
+    ), "labels' shape do not match the given dataset's shape"
+    assert (
+        data.ndim == 4
+    ), f"data should be in the format (num_segments, channels, height, width), but got {data.shape}"
+
+
+def check_params_dwl(data: torch.Tensor, labels: torch.Tensor):
+    assert (
+        type(data) == torch.Tensor
+    ), f"data should be a torch.Tensor but got {type(data)}"
+    assert (
+        type(labels) == torch.Tensor
+    ), f"labels should be a torch.Tensor but got {type(labels)}"
+    assert (
+        data.shape == labels.shape
+    ), "labels' shape do not match the given dataset's shape"
+    assert (
+        data.ndim == 3
+    ), f"data should be in the format (channels, height, width), but got {data.shape}"
+
+
 class SegmentedDataWithLabels:
     data: torch.Tensor
     labels: torch.Tensor
 
     def __init__(self, data: torch.Tensor, labels: torch.Tensor):
-        assert (
-            data.shape == labels.shape
-        ), "labels' shape do not match the given dataset's shape"
-        assert (
-            data.ndim == 4
-        ), f"data should be in the format (num_segments, channels, height, width), but got {data.shape}"
+        check_params_sdwl(data, labels)
         self.data: torch.Tensor = data
         self.labels: torch.Tensor = labels
 
@@ -35,7 +60,7 @@ class SegmentedDataWithLabels:
     def get_hacky_fold_iterable(
         self, fold_size=20
     ) -> Iterator[tuple[torch.Tensor, torch.Tensor]]:
-        window_start = random.randint(0, len(self.data))
+        window_start = random.randint(0, len(self.data) - fold_size)
         window_end = window_start + fold_size
         return zip(
             self.data[window_start:window_end], self.labels[window_start:window_end]
@@ -57,17 +82,12 @@ class DataWithLabels:
         offset: float,
         res: float,
     ):
+        check_params_dwl(data, labels)
         self.data = data
         self.labels = labels
         self.epsg = epsg
         self.offset = offset
         self.res = res
-        assert (
-            data.shape == labels.shape
-        ), "labels' shape do not match the given dataset's shape"
-        assert (
-            data.ndim == 3
-        ), f"data should be in the format (channels, height, width), but got {data.shape}"
 
 
 def merge_tiffs(

@@ -22,7 +22,7 @@ from common.constants import (
     DATA_LOCATION,
 )
 import subprocess
-from torchvision import transforms as trch_trns
+from torchvision.transforms import v2 as trch_trns
 from torchvision import tv_tensors
 import torch.nn.functional as F
 from typing import TYPE_CHECKING
@@ -34,46 +34,6 @@ import random
 import numpy as np
 
 VERBOSE = True
-
-
-def rotate_window(window: torch.Tensor, angle: float) -> torch.Tensor:
-    """
-    Rotate a 2D window by a specified angle.
-
-    Args:
-        window: 2D tensor of shape (height, width)
-        angle: Rotation angle in degrees.
-
-    Returns:
-        Rotated window tensor of same shape
-    """
-    # Convert to numpy for rotation
-    if isinstance(window, torch.Tensor):
-        window_np = window.cpu().numpy() if window.is_cuda else window.numpy()
-    else:
-        window_np = np.asarray(window)
-
-    # Get center of image
-    h, w = window_np.shape
-    center = (w / 2, h / 2)
-
-    # Get rotation matrix
-    rotation_matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
-
-    # Apply rotation
-    rotated = cv2.warpAffine(
-        window_np,
-        rotation_matrix,
-        (w, h),
-        borderMode=cv2.BORDER_REFLECT,
-        flags=cv2.INTER_LINEAR,
-    )
-
-    # Convert back to tensor
-    if isinstance(window, torch.Tensor):
-        return torch.from_numpy(rotated).to(window.dtype).to(window.device)
-    else:
-        return torch.from_numpy(rotated)
 
 
 def standardise_geotiff(target_path: str, write_path: str, force: bool = False):
@@ -188,27 +148,31 @@ def load_data_with_labels(folder_name: str) -> DataWithLabels:
 ROTATION_PER_PATCH = 5
 
 
-def _apply_rotation_to_patches_and_patch_labels(
+def _apply_rotation_to_sdwl(
     sdwl: SegmentedDataWithLabels,
+    target_size: int | None = None,
 ) -> SegmentedDataWithLabels:
-    transformer = trch_trns.RandomRotation(
+    rotation_transformer = trch_trns.RandomRotation(
         interpolation=trch_trns.InterpolationMode.BILINEAR,
         degrees=(0, 360),
         expand=True,
     )
-    sresized_sdwls: List[SegmentedDataWithLabels] = []
-    for data, label in zip(sdwl.data, sdwl.labels):
-        data = tv_tensors.Image(data)
-        label = tv_tensors.Mask(label)
-        patch_rotations = [transformer(data, label) for _ in range(ROTATION_PER_PATCH)]
-        rot_data, rot_labels = zip(*patch_rotations)
-        resized_sdwl = _resize_sdwl_patches(
-            SegmentedDataWithLabels(zip(rot_data, rot_labels))
-        )
-        sresized_sdwls.append(resized_sdwl)
 
-    spliced_sdwl = splice_tensors(sresized_sdwls)
-    return spliced_sdwl
+    repeated_data = sdwl.data.repeat(ROTATION_PER_PATCH, 1, 1, 1)
+    repeated_labels = sdwl.labels.repeat(ROTATION_PER_PATCH, 1, 1, 1)
+
+    data = tv_tensors.Image(repeated_data)
+    label = tv_tensors.Mask(repeated_labels)
+    rot_data, rot_labels = rotation_transformer(data, label)
+    rot_data = torch.Tensor(rot_data)
+    rot_labels = torch.Tensor(rot_labels)
+
+    result_sdwl = SegmentedDataWithLabels(rot_data, rot_labels)
+
+    if target_size is not None:
+        result_sdwl = _resize_sdwl_patches(result_sdwl, target_size)
+
+    return _randomise_order_of_sdwl_patches(result_sdwl)
 
 
 def _check_dwl_size(sdwl: SegmentedDataWithLabels, critical_threshold_gb=1.0) -> float:
@@ -280,7 +244,6 @@ def _get_patch_tensors_dwls_at_target_sizes(
         accepting_indicies = _get_accepting_segment_indecies(
             sdwl, PERCENTAGE_EMPTY_TARGET
         )
-
         _check_accepting_indecies(accepting_indicies, sdwl, TARGET_NUM_TO_TAKE)
     return sdwls_at_sizes
 
@@ -414,7 +377,7 @@ def _check_accepting_indecies(
         print(
             f"WARNING: accepting {len(accepting_indicies)} segments out of {sdwl.data.shape[0]} total ({len(accepting_indicies)/sdwl.data.shape[0]:.2%}). If you expect your dataset to be mostly empty, this may be fine."
         )
-    if len(accepting_indicies) > target_num_to_take:
+    if len(accepting_indicies) < target_num_to_take:
         print(
             f"WARNING: taking less than target number of segments for this scale: accepting {len(accepting_indicies)} segments, but we would like to take {target_num_to_take}. Consider increasing percentage_empty_target or adjusting your dataset if you want more segments at this scale."
         )
@@ -433,11 +396,24 @@ def _get_random_indicies(
     return result
 
 
+def _stack_sdwls(sdwls: List[SegmentedDataWithLabels]) -> SegmentedDataWithLabels:
+    spliced_data = torch.cat([sdwl.data for sdwl in sdwls], dim=0)
+    spliced_labels = torch.cat([sdwl.labels for sdwl in sdwls], dim=0)
+    return SegmentedDataWithLabels(spliced_data, spliced_labels)
+
+
+def _randomise_order_of_sdwl_patches(
+    sdwl: SegmentedDataWithLabels,
+) -> SegmentedDataWithLabels:
+    indices = torch.randperm(sdwl.data.shape[0])
+    sdwl = _take_indicies(sdwl, indices)
+    return sdwl
+
+
 def get_segments_with_sliding_window(
     dwl: DataWithLabels,
     base_window_size=300,
     stride=300,
-    rotation_angles=None,
     number_of_scales=10,
 ) -> SegmentedDataWithLabels:
 
@@ -452,23 +428,23 @@ def get_segments_with_sliding_window(
         TARGET_NUM_TO_TAKE,
         number_of_scales=number_of_scales,
     )
-
+    sdwls = []
     for sdwl in dwls_at_varried_sizes:
+        print("starting _get_random_indicies...")
         random_indices = _get_random_indicies(sdwl, target_num_patches_to_take)
+        print("starting _take_indicies...")
         sdwl = _take_indicies(sdwl, random_indices)
+        print("starting _apply_rotation_to_sdwl...")
+        sdwl = _apply_rotation_to_sdwl(sdwl, base_window_size)
+        print("starting _resize_sdwl_patches...")
         sdwl = _resize_sdwl_patches(sdwl, base_window_size)
+        sdwls.append(sdwl)
+    print("starting _stack_sdwls...")
+    sdwl = _stack_sdwls(sdwls)
+    print("starting _randomise_order_of_sdwl_patches...")
+    sdwl = _randomise_order_of_sdwl_patches(sdwl)
 
-    patches_ar = [sdwl.data for sdwl in dwls_at_varried_sizes]
-    labels_ar = [sdwl.labels for sdwl in dwls_at_varried_sizes]
-
-    patches = torch.stack(patches_ar)
-    labels = torch.stack(labels_ar)
-
-    sdwl = SegmentedDataWithLabels(patches, labels)
-
-    sdwl_out = _apply_rotation_to_patches_and_patch_labels(sdwl, rotation_angles)
-
-    return sdwl_out
+    return sdwl
 
 
 def remove_empty_segments(
@@ -663,10 +639,11 @@ def normalise_data_with_labels_local(
     return DataWithLabels(out, dwl.labels, dwl.epsg, dwl.offset, dwl.res)
 
 
-def splice_tensors(tensors: List[torch.Tensor], seed: int = 0) -> torch.Tensor:
+def determanistic_splice_tensors(
+    tensors: List[torch.Tensor], seed: int = 0
+) -> torch.Tensor:
     n_max = max(t.shape[0] for t in tensors)
     g = torch.Generator(device="cpu").manual_seed(seed)
-
     balanced = []
     for t in tensors:
         n = t.shape[0]

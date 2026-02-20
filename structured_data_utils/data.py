@@ -15,7 +15,7 @@ from structured_data_utils.structured_data_interfacing import (
     put_nans_in_neggative_positions,
     remove_segments_missing_positive,
     infer_nans_segmented,
-    splice_tensors,
+    determanistic_splice_tensors,
     normalise_data_with_labels_local,
 )
 
@@ -64,7 +64,6 @@ class ModelData:
 
     @staticmethod
     def splice_model_data(model_datas: List["ModelData"]) -> "ModelData":
-
         segmented_data_tensors = [
             model_data.segmented_data_with_labels.data for model_data in model_datas
         ]
@@ -72,8 +71,10 @@ class ModelData:
             model_data.segmented_data_with_labels.labels for model_data in model_datas
         ]
 
-        segmented_data_spliced = splice_tensors(segmented_data_tensors)
-        segmented_labels_spliced = splice_tensors(segmented_labels_tensors)
+        segmented_data_spliced = determanistic_splice_tensors(segmented_data_tensors)
+        segmented_labels_spliced = determanistic_splice_tensors(
+            segmented_labels_tensors
+        )
 
         segmented_labeled_data_spliced = SegmentedDataWithLabels(
             segmented_data_spliced, segmented_labels_spliced
