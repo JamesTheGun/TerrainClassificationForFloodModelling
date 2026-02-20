@@ -6,6 +6,8 @@ from structured_data_utils.config.constants import (
     RES,
     EMPTY_VAL,
     STANDARDISATION_TARGET_TIFFS,
+    PERCENTAGE_EMPTY_TARGET,
+    TARGET_NUM_TO_TAKE,
 )
 from common.data_managment import DataWithLabels, SegmentedDataWithLabels
 from common.constants import (
@@ -21,6 +23,7 @@ from common.constants import (
 )
 import subprocess
 from torchvision import transforms as trch_trns
+from torchvision import tv_tensors
 import torch.nn.functional as F
 from typing import TYPE_CHECKING
 import rasterio
@@ -182,100 +185,104 @@ def load_data_with_labels(folder_name: str) -> DataWithLabels:
     return DataWithLabels(combined, labels, epsg, offset_combined, RES)
 
 
+ROTATION_PER_PATCH = 5
+
+
 def _apply_rotation_to_patches_and_patch_labels(
-    patches: torch.Tensor,
-    patch_labels: torch.Tensor,
-    rotation_angles: List[float],
+    sdwl: SegmentedDataWithLabels,
 ) -> SegmentedDataWithLabels:
-
-    if rotation_angles is None:
-        print(f"No rotation angles provided, using generator...")
-        rotation_angles = [random.randint(0, 180) for _ in range(400)]
-    print(f"Using rotation angles: {rotation_angles}")
-
-    size_before_rotation = patches.shape[0]
-    rotated_patches = []
-    rotated_labels = []
-
-    for patch, label in zip(patches, patch_labels):
-        rotations_per_patch = 50
-        for i in range(rotations_per_patch):
-            angle = random.choice(rotation_angles)
-            rotated_patch = rotate_window(patch, angle)
-            rotated_label = rotate_window(label.float(), angle).long()
-            rotated_patches.append(rotated_patch)
-            rotated_labels.append(rotated_label)
-        # print(f"Processed {len(rotated_patches)} patches")
-    patches = torch.stack(rotated_patches)
-    patch_labels = torch.stack(rotated_labels)
-
-    size_after_rotation = patches.shape[0]
-
-    assert len(patches) == len(patch_labels), "ok the rotation function is fucked..."
-    print(f"len patches {len(patches)}")
-    print(f"len patch labels {len(patch_labels)}")
-
-    print(
-        f"Dataset size after rotation: {size_after_rotation} patches (x{size_after_rotation/size_before_rotation:.1f} increase)"
+    transformer = trch_trns.RandomRotation(
+        interpolation=trch_trns.InterpolationMode.BILINEAR,
+        degrees=(0, 360),
+        expand=True,
     )
-    return SegmentedDataWithLabels(patches, patch_labels)
+    sresized_sdwls: List[SegmentedDataWithLabels] = []
+    for data, label in zip(sdwl.data, sdwl.labels):
+        data = tv_tensors.Image(data)
+        label = tv_tensors.Mask(label)
+        patch_rotations = [transformer(data, label) for _ in range(ROTATION_PER_PATCH)]
+        rot_data, rot_labels = zip(*patch_rotations)
+        resized_sdwl = _resize_sdwl_patches(
+            SegmentedDataWithLabels(zip(rot_data, rot_labels))
+        )
+        sresized_sdwls.append(resized_sdwl)
+
+    spliced_sdwl = splice_tensors(sresized_sdwls)
+    return spliced_sdwl
+
+
+def _check_dwl_size(sdwl: SegmentedDataWithLabels, critical_threshold_gb=1.0) -> float:
+    sdwl_data_size_bytes = sdwl.data.element_size() * sdwl.data.nelement()
+    sdwl_labels_size_bytes = sdwl.labels.element_size() * sdwl.labels.nelement()
+    sdwl_data_size_gb = (sdwl_data_size_bytes) / (1024**3)
+    sdwl_labels_size_gb = (sdwl_labels_size_bytes) / (1024**3)
+    sdwl_total_size_gb = sdwl_data_size_gb + sdwl_labels_size_gb
+    if VERBOSE:
+        print(
+            f"SegmentedDataWithLabels size: data={sdwl_data_size_gb:.2f} GB, labels={sdwl_labels_size_gb:.2f} GB, total={sdwl_total_size_gb:.2f} GB"
+        )
+    if sdwl_total_size_gb > critical_threshold_gb:
+        response = input(
+            f"WARNING: SegmentedDataWithLabels is very large ({sdwl_total_size_gb:.2f} GB). Do you want to continue? (y/n): "
+        )
+        if response.lower() != "y":
+            raise MemoryError(
+                f"Aborting due to large SegmentedDataWithLabels size ({sdwl_total_size_gb:.2f} GB). Consider reducing window sizes or number of scales."
+            )
+    return sdwl_total_size_gb
+
+
+MAX_ALLOWED_GB = 3
+
+
+def _check_gross_size(gross_size_gb):
+    if VERBOSE:
+        print(
+            f"Gross size of all SegmentedDataWithLabels so far: {gross_size_gb:.2f} GB"
+        )
+    if gross_size_gb > MAX_ALLOWED_GB:
+        raise MemoryError(
+            f"Aborting due to large SegmentedDataWithLabels size ({gross_size_gb:.2f} GB). Consider reducing window sizes or number of scales."
+        )
 
 
 def _get_patch_tensors_at_target_size(
     window_size: int, data: torch.Tensor, stride: int
 ):
-    assert data.dim() == 3, "data must be a 3D tensor of shape (C,H,W)"
-    data_pactched = data.unfold(1, window_size, stride).unfold(2, window_size, stride)
-    return data_pactched
-
-
-def _check_dwl_size(dwl: SegmentedDataWithLabels, critical_threshold_gb=1.0) -> float:
-    dwl_data_size_bytes = dwl.data.element_size() * dwl.data.nelement()
-    dwl_labels_size_bytes = dwl.labels.element_size() * dwl.labels.nelement()
-    dwl_data_size_gb = (dwl_data_size_bytes) / (1024**3)
-    dwl_labels_size_gb = (dwl_labels_size_bytes) / (1024**3)
-    dwl_total_size_gb = dwl_data_size_gb + dwl_labels_size_gb
-    if VERBOSE:
-        print(
-            f"SegmentedDataWithLabels size: data={dwl_data_size_gb:.2f} GB, labels={dwl_labels_size_gb:.2f} GB, total={dwl_total_size_gb:.2f} GB"
-        )
-    if dwl_total_size_gb > critical_threshold_gb:
-        response = input(
-            f"WARNING: SegmentedDataWithLabels is very large ({dwl_total_size_gb:.2f} GB). Do you want to continue? (y/n): "
-        )
-        if response.lower() != "y":
-            raise MemoryError(
-                f"Aborting due to large SegmentedDataWithLabels size ({dwl_total_size_gb:.2f} GB). Consider reducing window sizes or number of scales."
-            )
-
-    return dwl_total_size_gb
-
-
-MAX_ALLOWED_GB = 1
+    assert (
+        data.dim() == 3
+    ), f"data must be a 3D tensor of shape (C,H,W), but got {data.shape}"
+    patched_data = data.unfold(1, window_size, stride).unfold(
+        2, window_size, stride
+    )  # (C, nH, nW, window, window)
+    patched_data = patched_data.permute(4, 3, 0, 1, 2).contiguous()
+    patched_data_collapsed_windows = patched_data.flatten(start_dim=0, end_dim=1)
+    return patched_data_collapsed_windows
 
 
 def _get_patch_tensors_dwls_at_target_sizes(
     window_sizes: List[int],
-    image_tensor_data: torch.Tensor,
-    image_tensor_labels: torch.Tensor,
+    dwl: DataWithLabels,
     stride: int,
 ) -> List[SegmentedDataWithLabels]:
-    dwls_at_sizes = []
+    gross_size_gb = 0
+    sdwls_at_sizes = []
     for window_size in window_sizes:
-        data_patches = _get_patch_tensors_at_target_size(
-            window_size, image_tensor_data, stride
-        )
+        data_patches = _get_patch_tensors_at_target_size(window_size, dwl.data, stride)
         labels_patches = _get_patch_tensors_at_target_size(
-            window_size, image_tensor_labels, stride
+            window_size, dwl.labels, stride
         )
-        dwl = SegmentedDataWithLabels(data_patches, labels_patches)
-        gross_size_gb = _check_dwl_size(dwl)
-        if gross_size_gb > MAX_ALLOWED_GB:
-            raise MemoryError(
-                f"Aborting due to large SegmentedDataWithLabels size ({gross_size_gb:.2f} GB). Consider reducing window sizes or number of scales."
-            )
-        dwls_at_sizes.append(dwl)
-    return dwls_at_sizes
+
+        sdwl = SegmentedDataWithLabels(data_patches, labels_patches)
+        gross_size_gb += _check_dwl_size(sdwl)
+        _check_gross_size(gross_size_gb)
+        sdwls_at_sizes.append(sdwl)
+        accepting_indicies = _get_accepting_segment_indecies(
+            sdwl, PERCENTAGE_EMPTY_TARGET
+        )
+
+        _check_accepting_indecies(accepting_indicies, sdwl, TARGET_NUM_TO_TAKE)
+    return sdwls_at_sizes
 
 
 def _size_change_percentage_from_gammavariate(alpha, beta) -> float:
@@ -312,13 +319,17 @@ def _get_window_sizes_from_scale_factors(
     return modified_window_sizes
 
 
-def _make_dwls_at_varied_scales(
-    data_with_labels: DataWithLabels,
+def _make_sdwls_at_varied_scales(
+    dwl: DataWithLabels,
     base_window_size: int,
     stride: int,
     number_of_scales: int,
 ) -> List[SegmentedDataWithLabels]:
-
+    if VERBOSE:
+        print(f"dwl shapes -- data: {dwl.data.shape}, labels: {dwl.labels.shape}")
+    assert (
+        dwl.data.dim() == 3
+    ), f"Expected dwl.data to be a 3D tensor of shape (C,H,W), but got {dwl.data.shape}"
     size_change_percentages = _get_size_change_percentages(
         number_of_scales, alpha=0.85, beta=117.6  # TODO: fix these magic numbers
     )
@@ -329,60 +340,61 @@ def _make_dwls_at_varied_scales(
         base_window_size, scale_factors
     )
     dwls_at_targeted_sizes = _get_patch_tensors_dwls_at_target_sizes(
-        modified_window_sizes, data_with_labels.data, stride
+        modified_window_sizes, dwl, stride
     )
     return dwls_at_targeted_sizes
 
 
-def _resize_patch(
-    data_with_labels: SegmentedDataWithLabels, new_size: int
+def _resize_sdwl_patches(
+    sdwl: SegmentedDataWithLabels, new_size: int
 ) -> SegmentedDataWithLabels:
-    patch = data_with_labels.data
-    label = data_with_labels.labels
-    assert patch.dim() == 2 and label.dim() == 2, "patch and label must be 2D tensors"
+    patch = sdwl.data
+    label = sdwl.labels
+    assert (
+        patch.dim() == 4 and label.dim() == 4
+    ), f"patch and label must be 4D tensors, but got {patch.shape} and {label.shape}"
     resizer = trch_trns.Resize(
-        new_size, interpolation=trch_trns.InterpolationMode.BILINEAR, antialias=True
+        (new_size, new_size),
+        interpolation=trch_trns.InterpolationMode.BILINEAR,
+        antialias=True,
     )
-    patch_resized = resizer.apply(patch)
-    label_resized = resizer.apply(label)
+    patch_resized: Tuple = resizer(patch)
+    label_resized: Tuple = resizer(label)
+    assert (
+        patch_resized.shape
+        == label_resized.shape
+        == (patch.shape[0], patch.shape[1], new_size, new_size)
+    ), f"Resized patch and label must have shape ({patch.shape[0]}, {patch.shape[1]}, {new_size}, {new_size}), but got {patch_resized.shape} and {label_resized.shape}"
     return SegmentedDataWithLabels(patch_resized, label_resized)
 
 
-def _take_random_subset(
-    data_with_labels: SegmentedDataWithLabels, random_indices: torch.Tensor
-) -> SegmentedDataWithLabels:
-    return SegmentedDataWithLabels(
-        data_with_labels.data.index_select(0, random_indices),
-        data_with_labels.labels.index_select(0, random_indices),
-    )
-
-
 def _take_indicies(
-    data_with_labels: SegmentedDataWithLabels, indicies: torch.Tensor
+    sdwl: SegmentedDataWithLabels, indicies: torch.Tensor
 ) -> SegmentedDataWithLabels:
-    return SegmentedDataWithLabels(
-        data_with_labels.data.index_select(0, indicies),
-        data_with_labels.labels.index_select(0, indicies),
+    print(
+        f"Taking indices: {indicies}, which has shape {indicies.shape}, from sdwl with data shape {sdwl.data.shape} and labels shape {sdwl.labels.shape}"
     )
+    print(f"examples of indices: {indicies[:10]}")
+    sda_taken = SegmentedDataWithLabels(
+        sdwl.data.index_select(0, indicies),
+        sdwl.labels.index_select(0, indicies),
+    )
+    print(
+        f"shape of taken data: {sda_taken.data.shape}, shape of taken labels: {sda_taken.labels.shape}"
+    )
+    return sda_taken
 
 
 def _get_accepting_segment_indecies(
-    label: torch.Tensor,
-    varified_labels: list[torch.Tensor],
+    sdwl: SegmentedDataWithLabels,
     percentage_empty_target: float,
 ) -> torch.Tensor:
-    if label.numel() == 0:
-        return []
 
-    empty_mask = (label == 0).all(dim=(1, 2))
+    segmented_labels = sdwl.labels
 
-    total_count = len(varified_labels)
-    if total_count == 0:
-        accept_empty = True
-    else:
-        empty_count = sum((vl == 0).all().item() for vl in varified_labels)
-        current_empty_percentage = empty_count / total_count
-        accept_empty = current_empty_percentage < percentage_empty_target
+    empty_mask = segmented_labels.flatten(start_dim=1).eq(0).all(dim=1)
+
+    accept_empty = torch.rand_like(empty_mask.float()) < percentage_empty_target
 
     accepting = (~empty_mask) | accept_empty
     return torch.nonzero(accepting).squeeze(1).tolist()
@@ -396,74 +408,67 @@ def _get_num_to_take_per_scale(target: int, number_of_scales: int = None) -> int
 
 
 def _check_accepting_indecies(
-    accepting_indicies, dwl: DataWithLabels, target_num_to_take: int
+    accepting_indicies, sdwl: SegmentedDataWithLabels, target_num_to_take: int
 ):
-    if len(accepting_indicies) / dwl.data.shape[0] > 0.1:
+    if len(accepting_indicies) / sdwl.data.shape[0] > 0.1:
         print(
-            f"WARNING: accepting {len(accepting_indicies)} segments out of {dwl.data.shape[0]} total ({len(accepting_indicies)/dwl.data.shape[0]:.2%}). If you expect your dataset to be mostly empty, this may be fine."
+            f"WARNING: accepting {len(accepting_indicies)} segments out of {sdwl.data.shape[0]} total ({len(accepting_indicies)/sdwl.data.shape[0]:.2%}). If you expect your dataset to be mostly empty, this may be fine."
         )
     if len(accepting_indicies) > target_num_to_take:
         print(
-            f"WARNING: taking less than target number of segments for this scale: accepting {len(accepting_indicies)} segments, but target is {target_num_to_take}. Consider increasing percentage_empty_target or adjusting your dataset if you want more segments at this scale."
+            f"WARNING: taking less than target number of segments for this scale: accepting {len(accepting_indicies)} segments, but we would like to take {target_num_to_take}. Consider increasing percentage_empty_target or adjusting your dataset if you want more segments at this scale."
         )
     assert (
         len(accepting_indicies) > 0
     ), "No segments accepted - try increasing percentage_empty_target!"
 
 
+def _get_random_indicies(
+    sdwl: SegmentedDataWithLabels, num_to_take: int
+) -> torch.Tensor:
+    assert (
+        sdwl.data.dim() == 4
+    ), f"Expected sdwl.data to be a 4D tensor of shape (N,C,H,W), but got {sdwl.data.shape}"
+    result = torch.randperm(sdwl.data.shape[0])[:num_to_take]
+    return result
+
+
 def get_segments_with_sliding_window(
-    data_with_labels: DataWithLabels,
+    dwl: DataWithLabels,
     base_window_size=300,
     stride=300,
     rotation_angles=None,
-    percentage_empty_target=0.30,
     number_of_scales=10,
 ) -> SegmentedDataWithLabels:
 
-    dwls_at_varried_sizes = _make_dwls_at_varied_scales(
-        data_with_labels,
+    dwls_at_varried_sizes = _make_sdwls_at_varied_scales(
+        dwl,
         base_window_size,
         stride,
         number_of_scales=number_of_scales,
     )
 
-    varified_patches = []
-    varified_labels = []
-
-    num_to_take = _get_num_to_take_per_scale(
-        target=30000,  # TODO: fix this magic number
+    target_num_patches_to_take = _get_num_to_take_per_scale(
+        TARGET_NUM_TO_TAKE,
         number_of_scales=number_of_scales,
     )
 
-    for dwl in dwls_at_varried_sizes:
-        accepting_indicies = _get_accepting_segment_indecies(
-            dwl.labels, varified_labels, percentage_empty_target
-        )
+    for sdwl in dwls_at_varried_sizes:
+        random_indices = _get_random_indicies(sdwl, target_num_patches_to_take)
+        sdwl = _take_indicies(sdwl, random_indices)
+        sdwl = _resize_sdwl_patches(sdwl, base_window_size)
 
-        _check_accepting_indecies(accepting_indicies, dwl, num_to_take)
+    patches_ar = [sdwl.data for sdwl in dwls_at_varried_sizes]
+    labels_ar = [sdwl.labels for sdwl in dwls_at_varried_sizes]
 
-        data_with_labels_scaled = _take_indicies(
-            data_with_labels_scaled, accepting_indicies
-        )
+    patches = torch.stack(patches_ar)
+    labels = torch.stack(labels_ar)
 
-        random_indices = torch.randperm(data_with_labels_scaled.data.shape[0])[
-            :num_to_take
-        ]
-        data_with_labels_scaled = _take_random_subset(
-            data_with_labels_scaled, random_indices
-        )
-        data_with_labels_scaled = _resize_patch(
-            data_with_labels_scaled, base_window_size
-        )
+    sdwl = SegmentedDataWithLabels(patches, labels)
 
-    patches = torch.stack(varified_patches)
-    patch_labels = torch.stack(varified_labels)
+    sdwl_out = _apply_rotation_to_patches_and_patch_labels(sdwl, rotation_angles)
 
-    data_with_labels_out = _apply_rotation_to_patches_and_patch_labels(
-        patches, patch_labels, rotation_angles
-    )
-
-    return data_with_labels_out
+    return sdwl_out
 
 
 def remove_empty_segments(
@@ -501,11 +506,11 @@ def remove_segments_missing_positive(
     )
 
 
-def infer_nans_segmented(dwl: SegmentedDataWithLabels) -> SegmentedDataWithLabels:
-    x = dwl.data
+def infer_nans_segmented(sdwl: SegmentedDataWithLabels) -> SegmentedDataWithLabels:
+    x = sdwl.data
     mean = torch.nanmean(x)
     out = torch.where(torch.isnan(x), mean, x)
-    return SegmentedDataWithLabels(out, dwl.labels)
+    return SegmentedDataWithLabels(out, sdwl.labels)
 
 
 def normalise_tensor_local(
