@@ -355,6 +355,29 @@ def _get_accepting_segment_indecies(
     return torch.nonzero(accepting).squeeze(1).tolist()
 
 
+def _get_num_to_take_per_scale(target: int, number_of_scales: int = None) -> int:
+    num_to_take_per_scale = (
+        target // number_of_scales if number_of_scales is not None else target
+    )
+    return num_to_take_per_scale
+
+
+def _check_accepting_indecies(
+    accepting_indicies, dwl: DataWithLabels, target_num_to_take: int
+):
+    if len(accepting_indicies) / dwl.data.shape[0] > 0.1:
+        print(
+            f"WARNING: accepting {len(accepting_indicies)} segments out of {dwl.data.shape[0]} total ({len(accepting_indicies)/dwl.data.shape[0]:.2%}). If you expect your dataset to be mostly empty, this may be fine."
+        )
+    if len(accepting_indicies) > target_num_to_take:
+        print(
+            f"WARNING: taking less than target number of segments for this scale: accepting {len(accepting_indicies)} segments, but target is {target_num_to_take}. Consider increasing percentage_empty_target or adjusting your dataset if you want more segments at this scale."
+        )
+    assert (
+        len(accepting_indicies) > 0
+    ), "No segments accepted - try increasing percentage_empty_target!"
+
+
 def get_segments_with_sliding_window(
     data_with_labels: DataWithLabels,
     base_window_size=300,
@@ -374,18 +397,22 @@ def get_segments_with_sliding_window(
     varified_patches = []
     varified_labels = []
 
+    num_to_take = _get_num_to_take_per_scale(
+        target=30000,  # TODO: fix this magic number
+        number_of_scales=number_of_scales,
+    )
+
     for dwl in dwls_at_varried_sizes:
-        num_to_take = dwl.data.shape[0] // number_of_scales
         accepting_indicies = _get_accepting_segment_indecies(
             dwl.labels, varified_labels, percentage_empty_target
         )
-        if len(accepting_indicies) > 0:
-            accepting_indicies = torch.tensor(
-                accepting_indicies, device=dwl.data.device
-            )
-            data_with_labels_scaled = _take_indicies(
-                data_with_labels_scaled, accepting_indicies
-            )
+
+        _check_accepting_indecies(accepting_indicies, dwl, num_to_take)
+
+        data_with_labels_scaled = _take_indicies(
+            data_with_labels_scaled, accepting_indicies
+        )
+
         random_indices = torch.randperm(data_with_labels_scaled.data.shape[0])[
             :num_to_take
         ]
@@ -395,18 +422,6 @@ def get_segments_with_sliding_window(
         data_with_labels_scaled = _resize_patch(
             data_with_labels_scaled, base_window_size
         )
-
-    for patch, label in zip(sgd.data, sgd.labels):
-
-        accepting = _check_accepting_segment(
-            label, varified_labels, percentage_empty_target
-        )
-
-        if not accepting:
-            continue
-
-        varified_patches.append(patch)
-        varified_labels.append(label)
 
     patches = torch.stack(varified_patches)
     patch_labels = torch.stack(varified_labels)
