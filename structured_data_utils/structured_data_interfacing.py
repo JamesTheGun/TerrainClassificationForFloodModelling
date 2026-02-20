@@ -30,6 +30,8 @@ import cv2
 import random
 import numpy as np
 
+VERBOSE = True
+
 
 def rotate_window(window: torch.Tensor, angle: float) -> torch.Tensor:
     """
@@ -227,6 +229,31 @@ def _get_patch_tensors_at_target_size(
     return data_pactched
 
 
+def _check_dwl_size(dwl: SegmentedDataWithLabels, critical_threshold_gb=1.0) -> float:
+    dwl_data_size_bytes = dwl.data.element_size() * dwl.data.nelement()
+    dwl_labels_size_bytes = dwl.labels.element_size() * dwl.labels.nelement()
+    dwl_data_size_gb = (dwl_data_size_bytes) / (1024**3)
+    dwl_labels_size_gb = (dwl_labels_size_bytes) / (1024**3)
+    dwl_total_size_gb = dwl_data_size_gb + dwl_labels_size_gb
+    if VERBOSE:
+        print(
+            f"SegmentedDataWithLabels size: data={dwl_data_size_gb:.2f} GB, labels={dwl_labels_size_gb:.2f} GB, total={dwl_total_size_gb:.2f} GB"
+        )
+    if dwl_total_size_gb > critical_threshold_gb:
+        response = input(
+            f"WARNING: SegmentedDataWithLabels is very large ({dwl_total_size_gb:.2f} GB). Do you want to continue? (y/n): "
+        )
+        if response.lower() != "y":
+            raise MemoryError(
+                f"Aborting due to large SegmentedDataWithLabels size ({dwl_total_size_gb:.2f} GB). Consider reducing window sizes or number of scales."
+            )
+
+    return dwl_total_size_gb
+
+
+MAX_ALLOWED_GB = 1
+
+
 def _get_patch_tensors_dwls_at_target_sizes(
     window_sizes: List[int],
     image_tensor_data: torch.Tensor,
@@ -242,6 +269,11 @@ def _get_patch_tensors_dwls_at_target_sizes(
             window_size, image_tensor_labels, stride
         )
         dwl = SegmentedDataWithLabels(data_patches, labels_patches)
+        gross_size_gb = _check_dwl_size(dwl)
+        if gross_size_gb > MAX_ALLOWED_GB:
+            raise MemoryError(
+                f"Aborting due to large SegmentedDataWithLabels size ({gross_size_gb:.2f} GB). Consider reducing window sizes or number of scales."
+            )
         dwls_at_sizes.append(dwl)
     return dwls_at_sizes
 
@@ -286,6 +318,7 @@ def _make_dwls_at_varied_scales(
     stride: int,
     number_of_scales: int,
 ) -> List[SegmentedDataWithLabels]:
+
     size_change_percentages = _get_size_change_percentages(
         number_of_scales, alpha=0.85, beta=117.6  # TODO: fix these magic numbers
     )
