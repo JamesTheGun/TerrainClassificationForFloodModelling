@@ -10,26 +10,37 @@ from osgeo import gdal
 import rasterio
 from rasterio.merge import merge
 
-#note to future self: We dont even need to track the offsets in the segmented data because it is only used for training the model...
-#However, we should track the offsets and EPSG of the un-segmented datasets with labels because we will generate these labels and want to be able to project them onto the globe going forwards, because we probably want to use
-#basically this entire area needs a rethink, probs revert to earler version
+# note to future self: We dont even need to track the offsets in the segmented data because it is only used for training the model...
+# However, we should track the offsets and EPSG of the un-segmented datasets with labels because we will generate these labels and want to be able to project them onto the globe going forwards, because we probably want to use
+# basically this entire area needs a rethink, probs revert to earler version
+
 
 class SegmentedDataWithLabels:
     data: torch.Tensor
     labels: torch.Tensor
 
     def __init__(self, data: torch.Tensor, labels: torch.Tensor):
-        assert data.shape == labels.shape, "labels' shape do not match the given dataset's shape"
+        assert (
+            data.shape == labels.shape
+        ), "labels' shape do not match the given dataset's shape"
+        assert (
+            data.ndim == 4
+        ), f"data should be in the format (num_segments, channels, height, width), but got {data.shape}"
         self.data: torch.Tensor = data
         self.labels: torch.Tensor = labels
 
     def get_iterable(self) -> Iterator[tuple[torch.Tensor, torch.Tensor]]:
         return zip(self.data, self.labels)
-    
-    def get_hacky_fold_iterable(self, fold_size = 20) -> Iterator[tuple[torch.Tensor, torch.Tensor]]:
+
+    def get_hacky_fold_iterable(
+        self, fold_size=20
+    ) -> Iterator[tuple[torch.Tensor, torch.Tensor]]:
         window_start = random.randint(0, len(self.data))
         window_end = window_start + fold_size
-        return zip(self.data[window_start:window_end], self.labels[window_start:window_end])
+        return zip(
+            self.data[window_start:window_end], self.labels[window_start:window_end]
+        )
+
 
 class DataWithLabels:
     data: torch.Tensor
@@ -37,18 +48,27 @@ class DataWithLabels:
     epsg: int
     offset: float
     res: float
-    def __init__(self,
-                 data: torch.Tensor, 
-                 labels: torch.Tensor, 
-                 epsg: int, 
-                 offset: float,
-                 res: float):
+
+    def __init__(
+        self,
+        data: torch.Tensor,
+        labels: torch.Tensor,
+        epsg: int,
+        offset: float,
+        res: float,
+    ):
         self.data = data
         self.labels = labels
         self.epsg = epsg
         self.offset = offset
         self.res = res
-        assert data.shape == labels.shape, "labels' shape do not match the given dataset's shape"
+        assert (
+            data.shape == labels.shape
+        ), "labels' shape do not match the given dataset's shape"
+        assert (
+            data.ndim == 3
+        ), f"data should be in the format (channels, height, width), but got {data.shape}"
+
 
 def merge_tiffs(
     target_dir,
