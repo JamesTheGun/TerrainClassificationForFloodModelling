@@ -6,17 +6,17 @@ import pandas as pd
 import torch
 import torch.nn.functional as F
 
-from common.data_managment import DataWithLabels, SegmentedDataWithLabels
+from common.data_managment import DataWithLabelsGeoTethered, SegmentedDataWithLabels
 from structured_data_utils.config.constants import ESPSG, RES, EMPTY_VAL
 from structured_data_utils.structured_data_interfacing import (
+    standardise_dataset,
     get_segments_with_sliding_window,
     remove_empty_segments,
     load_data_with_labels,
     put_nans_in_neggative_positions,
-    remove_segments_missing_positive,
     infer_nans_segmented,
     determanistic_splice_tensors,
-    normalise_data_with_labels_local,
+    normalise_dwl_local,
 )
 
 
@@ -24,36 +24,30 @@ from structured_data_utils.structured_data_interfacing import (
 class ModelData:
     """prepare and store data with methods for retreiving train/test split"""
 
-    data_with_labels: DataWithLabels = None
+    data_with_labels: DataWithLabelsGeoTethered = None
     segmented_data_with_labels: SegmentedDataWithLabels = None
-    train_set: DataWithLabels = None
-    test_set: DataWithLabels = None
+    train_set: DataWithLabelsGeoTethered = None
+    test_set: DataWithLabelsGeoTethered = None
 
     def prepare_data(
         self,
         folder_name: str,
         sliding_window_size=300,
         stride=300,
-        apply_rotation=True,
-        rotation_angles=None,
+        force_standardise: bool = False,
     ):
+        standardise_dataset(folder_name, force=force_standardise)
         self.data_with_labels = load_data_with_labels(folder_name)
         self.data_with_labels.data = put_nans_in_neggative_positions(
             self.data_with_labels.data
         )
-        self.data_with_labels = normalise_data_with_labels_local(
-            self.data_with_labels, kernel_size=51
+        self.data_with_labels = normalise_dwl_local(
+            self.data_with_labels, kernel_size=11
         )
         self.segmented_data_with_labels = get_segments_with_sliding_window(
             self.data_with_labels,
             base_window_size=sliding_window_size,
             stride=stride,
-            apply_rotation=apply_rotation,
-            rotation_angles=rotation_angles,
-            percentage_empty_target=0.30,
-        )
-        self.segmented_data_with_labels = remove_empty_segments(
-            self.segmented_data_with_labels
         )
         self.segmented_data_with_labels = infer_nans_segmented(
             self.segmented_data_with_labels

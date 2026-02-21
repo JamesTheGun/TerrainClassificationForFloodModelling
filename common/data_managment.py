@@ -1,58 +1,34 @@
 from typing import Iterator
 from pathlib import Path
-from dataclasses import dataclass
 
 import torch
 import random
 
-from pathlib import Path
 from osgeo import gdal
-import rasterio
-from rasterio.merge import merge
+from common.safety_first.dwl_checks import (
+    check_data_dwl,
+    check_labels_dwl,
+    check_params_dwl,
+)
+from common.safety_first.sdwl_checks import (
+    check_data_sdwl,
+    check_labels_sdwl,
+    check_params_sdwl,
+)
 
 # note to future self: We dont even need to track the offsets in the segmented data because it is only used for training the model...
 # However, we should track the offsets and EPSG of the un-segmented datasets with labels because we will generate these labels and want to be able to project them onto the globe going forwards, because we probably want to use
 # basically this entire area needs a rethink, probs revert to earler version
 
 
-def check_params_sdwl(data: torch.Tensor, labels: torch.Tensor):
-    assert (
-        type(data) == torch.Tensor
-    ), f"data should be a torch.Tensor but got {type(data)}"
-    assert (
-        type(labels) == torch.Tensor
-    ), f"labels should be a torch.Tensor but got {type(labels)}"
-    assert (
-        data.shape == labels.shape
-    ), "labels' shape do not match the given dataset's shape"
-    assert (
-        data.ndim == 4
-    ), f"data should be in the format (num_segments, channels, height, width), but got {data.shape}"
-
-
-def check_params_dwl(data: torch.Tensor, labels: torch.Tensor):
-    assert (
-        type(data) == torch.Tensor
-    ), f"data should be a torch.Tensor but got {type(data)}"
-    assert (
-        type(labels) == torch.Tensor
-    ), f"labels should be a torch.Tensor but got {type(labels)}"
-    assert (
-        data.shape == labels.shape
-    ), "labels' shape do not match the given dataset's shape"
-    assert (
-        data.ndim == 3
-    ), f"data should be in the format (channels, height, width), but got {data.shape}"
-
-
 class SegmentedDataWithLabels:
-    data: torch.Tensor
-    labels: torch.Tensor
+    data_and_labels: torch.Tensor
 
     def __init__(self, data: torch.Tensor, labels: torch.Tensor):
         check_params_sdwl(data, labels)
-        self.data: torch.Tensor = data
-        self.labels: torch.Tensor = labels
+        # data: (N, C, H, W), labels: (N, C, H, W)
+        # stack so dim 1 selects data (0) vs labels (1)
+        self.data_and_labels = torch.stack([data, labels], dim=1)
 
     def get_iterable(self) -> Iterator[tuple[torch.Tensor, torch.Tensor]]:
         return zip(self.data, self.labels)
@@ -66,10 +42,60 @@ class SegmentedDataWithLabels:
             self.data[window_start:window_end], self.labels[window_start:window_end]
         )
 
+    @property
+    def data(self) -> torch.Tensor:
+        return self.data_and_labels[:, 0, :, :, :]
+
+    @property
+    def labels(self) -> torch.Tensor:
+        return self.data_and_labels[:, 1, :, :, :]
+
+    @data.setter
+    def data(self, data: torch.Tensor):
+        check_data_sdwl(data)
+        self.data_and_labels[:, 0, :, :, :] = data
+
+    @labels.setter
+    def labels(self, labels: torch.Tensor):
+        check_labels_sdwl(labels)
+        self.data_and_labels[:, 1, :, :, :] = labels
+
 
 class DataWithLabels:
-    data: torch.Tensor
-    labels: torch.Tensor
+    data_and_labels: torch.Tensor
+
+    def __init__(
+        self,
+        data: torch.Tensor,
+        labels: torch.Tensor,
+    ):
+        check_params_dwl(data, labels)
+        # stack so dim 0 selects data (0) vs labels (1)
+        self.data_and_labels = torch.stack([data, labels], dim=0)
+
+    @property
+    def data(self) -> torch.Tensor:
+        return self.data_and_labels[0]
+
+    @property
+    def labels(self) -> torch.Tensor:
+        return self.data_and_labels[1]
+
+    @labels.setter
+    def labels(self, labels: torch.Tensor):
+        check_labels_dwl(labels)
+        self.data_and_labels[1] = labels
+
+    @data.setter
+    def data(self, data: torch.Tensor):
+        check_data_dwl(data)
+        self.data_and_labels[0] = data
+
+
+class DataWithLabelsGeoTethered(DataWithLabels):
+    """dwl but tethered to geology..."""
+
+    data_and_labels: torch.Tensor
     epsg: int
     offset: float
     res: float
@@ -78,13 +104,11 @@ class DataWithLabels:
         self,
         data: torch.Tensor,
         labels: torch.Tensor,
-        epsg: int,
-        offset: float,
-        res: float,
+        epsg: int = None,
+        offset: float = None,
+        res: float = None,
     ):
-        check_params_dwl(data, labels)
-        self.data = data
-        self.labels = labels
+        super().__init__(data, labels)
         self.epsg = epsg
         self.offset = offset
         self.res = res

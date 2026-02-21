@@ -9,7 +9,11 @@ from structured_data_utils.config.constants import (
     PERCENTAGE_EMPTY_TARGET,
     TARGET_NUM_TO_TAKE,
 )
-from common.data_managment import DataWithLabels, SegmentedDataWithLabels
+from common.data_managment import (
+    DataWithLabelsGeoTethered,
+    SegmentedDataWithLabels,
+    DataWithLabels,
+)
 from common.constants import (
     POSITIVE_LAS_DIR,
     NEGATIVE_LAS_DIR,
@@ -88,7 +92,6 @@ def standardise_folder(dir: str, force: bool = False, target_files: list = None)
 
 
 def offset_meters_to_offset_pixels(offset):
-    print(offset[0] / float(RES))
     offset_x_corrected = int(offset[0] / float(RES))
     offset_y_corrected = int(offset[1] / float(RES))
     return (offset_x_corrected, offset_y_corrected)
@@ -99,8 +102,6 @@ def pad_pos_mask_to_match(
 ):
     pad_x = other_tensor.shape[-1] - pos_tensor.shape[-1]
     pad_y = other_tensor.shape[-2] - pos_tensor.shape[-2]
-
-    print(f"pad_x: {pad_x}, pad_y: {pad_y}")
 
     padded = F.pad(pos_tensor, (0, pad_x, 0, pad_y), mode="constant", value=EMPTY_VAL)
     pixel_offset = offset_meters_to_offset_pixels(offset)
@@ -121,7 +122,7 @@ def put_nans_in_neggative_positions(data: torch.Tensor) -> torch.Tensor:
     return data
 
 
-def load_data_with_labels(folder_name: str) -> DataWithLabels:
+def load_data_with_labels(folder_name: str) -> DataWithLabelsGeoTethered:
     positive, offset_positive = get_positive_geotiff_tensor_and_offset(folder_name)
     combined, offset_combined = get_combined_geotiff_tensor_and_offset(folder_name)
 
@@ -142,37 +143,73 @@ def load_data_with_labels(folder_name: str) -> DataWithLabels:
 
     epsg = retrieve_dataset_EPSG(folder_name)
 
-    return DataWithLabels(combined, labels, epsg, offset_combined, RES)
+    return DataWithLabelsGeoTethered(combined, labels, epsg, offset_combined, RES)
 
 
 ROTATION_PER_PATCH = 5
 
 
-def _apply_rotation_to_sdwl(
-    sdwl: SegmentedDataWithLabels,
-    target_size: int | None = None,
-) -> SegmentedDataWithLabels:
-    rotation_transformer = trch_trns.RandomRotation(
-        interpolation=trch_trns.InterpolationMode.BILINEAR,
-        degrees=(0, 360),
-        expand=True,
+def _apply_rotation_to_patch(
+    dwl_segment: DataWithLabels,
+    angle: float,
+    image_fill: float = None,
+    mask_fill: int = None,
+) -> DataWithLabels:
+
+    if not image_fill:
+        image_fill = torch.mean(dwl_segment.data).item()
+    if not mask_fill:
+        mask_fill = 0
+
+    data = tv_tensors.Image(dwl_segment.data)
+    labels = tv_tensors.Mask(dwl_segment.labels)
+
+    data_rotated = trch_trns.functional.rotate(
+        data,
+        angle=angle,
+        interpolation=trch_trns.InterpolationMode.NEAREST,
+        expand=False,
+        fill=image_fill,
     )
 
-    repeated_data = sdwl.data.repeat(ROTATION_PER_PATCH, 1, 1, 1)
-    repeated_labels = sdwl.labels.repeat(ROTATION_PER_PATCH, 1, 1, 1)
+    labels_rotated = trch_trns.functional.rotate(
+        labels,
+        angle=angle,
+        interpolation=trch_trns.InterpolationMode.NEAREST,
+        expand=False,
+        fill=mask_fill,
+    )
 
-    data = tv_tensors.Image(repeated_data)
-    label = tv_tensors.Mask(repeated_labels)
-    rot_data, rot_labels = rotation_transformer(data, label)
-    rot_data = torch.Tensor(rot_data)
-    rot_labels = torch.Tensor(rot_labels)
+    return DataWithLabels(torch.Tensor(data_rotated), torch.Tensor(labels_rotated))
 
-    result_sdwl = SegmentedDataWithLabels(rot_data, rot_labels)
 
-    if target_size is not None:
-        result_sdwl = _resize_sdwl_patches(result_sdwl, target_size)
+def _apply_rotation_to_sdwl(
+    sdwl: SegmentedDataWithLabels,
+) -> SegmentedDataWithLabels:
 
-    return _randomise_order_of_sdwl_patches(result_sdwl)
+    rotated_data_segments = []
+    rotated_label_segments = []
+
+    for _ in range(ROTATION_PER_PATCH):
+        angles = torch.empty(sdwl.data.shape[0]).uniform_(0, 360)
+        for idx in range(sdwl.data.shape[0]):
+            patch = DataWithLabels(sdwl.data[idx], sdwl.labels[idx])
+            rotat_dwl = _apply_rotation_to_patch(
+                patch,
+                angle=angles[idx].item(),
+            )
+            rotated_data_segments.append(rotat_dwl.data)
+            rotated_label_segments.append(rotat_dwl.labels)
+
+    stacked_data = torch.stack(rotated_data_segments, dim=0)
+    stacked_labels = torch.stack(rotated_label_segments, dim=0)
+
+    result_sdwl = SegmentedDataWithLabels(
+        stacked_data,
+        stacked_labels,
+    )
+
+    return result_sdwl
 
 
 def _check_dwl_size(sdwl: SegmentedDataWithLabels, critical_threshold_gb=1.0) -> float:
@@ -196,7 +233,7 @@ def _check_dwl_size(sdwl: SegmentedDataWithLabels, critical_threshold_gb=1.0) ->
     return sdwl_total_size_gb
 
 
-MAX_ALLOWED_GB = 3
+MAX_ALLOWED_GB = 10
 
 
 def _check_gross_size(gross_size_gb):
@@ -219,14 +256,16 @@ def _get_patch_tensors_at_target_size(
     patched_data = data.unfold(1, window_size, stride).unfold(
         2, window_size, stride
     )  # (C, nH, nW, window, window)
-    patched_data = patched_data.permute(4, 3, 0, 1, 2).contiguous()
+    # Rearrange to (nH, nW, C, window, window) so we can flatten nH and nW together
+    patched_data = patched_data.permute(1, 2, 0, 3, 4).contiguous()
+    # Flatten patch dimensions: (nH*nW, C, window, window)
     patched_data_collapsed_windows = patched_data.flatten(start_dim=0, end_dim=1)
     return patched_data_collapsed_windows
 
 
 def _get_patch_tensors_dwls_at_target_sizes(
     window_sizes: List[int],
-    dwl: DataWithLabels,
+    dwl: DataWithLabelsGeoTethered,
     stride: int,
 ) -> List[SegmentedDataWithLabels]:
     gross_size_gb = 0
@@ -283,7 +322,7 @@ def _get_window_sizes_from_scale_factors(
 
 
 def _make_sdwls_at_varied_scales(
-    dwl: DataWithLabels,
+    dwl: DataWithLabelsGeoTethered,
     base_window_size: int,
     stride: int,
     number_of_scales: int,
@@ -308,6 +347,15 @@ def _make_sdwls_at_varied_scales(
     return dwls_at_targeted_sizes
 
 
+def _make_image_resizer(target_size: int) -> trch_trns.Resize:
+    resizer = trch_trns.Resize(
+        (target_size, target_size),
+        interpolation=trch_trns.InterpolationMode.BILINEAR,
+        antialias=True,
+    )
+    return resizer
+
+
 def _resize_sdwl_patches(
     sdwl: SegmentedDataWithLabels, new_size: int
 ) -> SegmentedDataWithLabels:
@@ -316,11 +364,7 @@ def _resize_sdwl_patches(
     assert (
         patch.dim() == 4 and label.dim() == 4
     ), f"patch and label must be 4D tensors, but got {patch.shape} and {label.shape}"
-    resizer = trch_trns.Resize(
-        (new_size, new_size),
-        interpolation=trch_trns.InterpolationMode.BILINEAR,
-        antialias=True,
-    )
+    resizer = _make_image_resizer(new_size)
     patch_resized: Tuple = resizer(patch)
     label_resized: Tuple = resizer(label)
     assert (
@@ -334,16 +378,9 @@ def _resize_sdwl_patches(
 def _take_indicies(
     sdwl: SegmentedDataWithLabels, indicies: torch.Tensor
 ) -> SegmentedDataWithLabels:
-    print(
-        f"Taking indices: {indicies}, which has shape {indicies.shape}, from sdwl with data shape {sdwl.data.shape} and labels shape {sdwl.labels.shape}"
-    )
-    print(f"examples of indices: {indicies[:10]}")
     sda_taken = SegmentedDataWithLabels(
         sdwl.data.index_select(0, indicies),
         sdwl.labels.index_select(0, indicies),
-    )
-    print(
-        f"shape of taken data: {sda_taken.data.shape}, shape of taken labels: {sda_taken.labels.shape}"
     )
     return sda_taken
 
@@ -397,8 +434,10 @@ def _get_random_indicies(
 
 
 def _stack_sdwls(sdwls: List[SegmentedDataWithLabels]) -> SegmentedDataWithLabels:
-    spliced_data = torch.cat([sdwl.data for sdwl in sdwls], dim=0)
-    spliced_labels = torch.cat([sdwl.labels for sdwl in sdwls], dim=0)
+    data_from_sdwls = [sdwl.data for sdwl in sdwls]
+    labels_from_sdwls = [sdwl.labels for sdwl in sdwls]
+    spliced_data = torch.cat(data_from_sdwls, dim=0)
+    spliced_labels = torch.cat(labels_from_sdwls, dim=0)
     return SegmentedDataWithLabels(spliced_data, spliced_labels)
 
 
@@ -411,12 +450,11 @@ def _randomise_order_of_sdwl_patches(
 
 
 def get_segments_with_sliding_window(
-    dwl: DataWithLabels,
+    dwl: DataWithLabelsGeoTethered,
     base_window_size=300,
     stride=300,
     number_of_scales=10,
 ) -> SegmentedDataWithLabels:
-
     dwls_at_varried_sizes = _make_sdwls_at_varied_scales(
         dwl,
         base_window_size,
@@ -430,18 +468,12 @@ def get_segments_with_sliding_window(
     )
     sdwls = []
     for sdwl in dwls_at_varried_sizes:
-        print("starting _get_random_indicies...")
         random_indices = _get_random_indicies(sdwl, target_num_patches_to_take)
-        print("starting _take_indicies...")
         sdwl = _take_indicies(sdwl, random_indices)
-        print("starting _apply_rotation_to_sdwl...")
-        sdwl = _apply_rotation_to_sdwl(sdwl, base_window_size)
-        print("starting _resize_sdwl_patches...")
+        sdwl = _apply_rotation_to_sdwl(sdwl)
         sdwl = _resize_sdwl_patches(sdwl, base_window_size)
         sdwls.append(sdwl)
-    print("starting _stack_sdwls...")
     sdwl = _stack_sdwls(sdwls)
-    print("starting _randomise_order_of_sdwl_patches...")
     sdwl = _randomise_order_of_sdwl_patches(sdwl)
 
     return sdwl
@@ -450,15 +482,12 @@ def get_segments_with_sliding_window(
 def remove_empty_segments(
     data_with_labels: SegmentedDataWithLabels,
 ) -> SegmentedDataWithLabels:
-    print(data_with_labels.data.shape)
     not_empty = ~torch.isnan(data_with_labels.data)
     mean_occupied = not_empty.float().mean(dim=(1, 2))
-    print(f"mean_occupied: {mean_occupied}")
     mask = mean_occupied > 0.5
     data_with_labels = SegmentedDataWithLabels(
         data_with_labels.data[mask], data_with_labels.labels[mask]
     )
-    print(data_with_labels.data.shape)
     return data_with_labels
 
 
@@ -585,14 +614,14 @@ def normalise_tensor_local(
     return out
 
 
-def normalise_data_with_labels_local(
-    dwl: DataWithLabels,
+def normalise_dwl_local(
+    dwl: DataWithLabels | DataWithLabelsGeoTethered,
     kernel_size: int,
     sigma: float | None = None,
     eps: float = 1e-6,
     target_mean: float = 0.0,
     target_std: float = 1.0,
-) -> DataWithLabels:
+) -> DataWithLabels | DataWithLabelsGeoTethered:
     """
     Apply local normalization to DataWithLabels.data while preserving labels and metadata.
     """
@@ -627,6 +656,7 @@ def normalise_data_with_labels_local(
         )
 
     _print_stats("local_normalise:input", dwl.data)
+
     out = normalise_tensor_local(
         dwl.data,
         kernel_size=kernel_size,
@@ -636,7 +666,10 @@ def normalise_data_with_labels_local(
         target_std=target_std,
     )
     _print_stats("local_normalise:output", out)
-    return DataWithLabels(out, dwl.labels, dwl.epsg, dwl.offset, dwl.res)
+    if isinstance(dwl, DataWithLabelsGeoTethered):
+        return DataWithLabelsGeoTethered(out, dwl.labels, dwl.epsg, dwl.offset, dwl.res)
+    else:
+        return DataWithLabels(out, dwl.labels)
 
 
 def determanistic_splice_tensors(
