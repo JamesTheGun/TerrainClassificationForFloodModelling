@@ -41,9 +41,7 @@ class ModelData:
         self.data_with_labels.data = put_nans_in_neggative_positions(
             self.data_with_labels.data
         )
-        self.data_with_labels = normalise_dwl_local(
-            self.data_with_labels, kernel_size=11
-        )
+        self.data_with_labels = normalise_dwl_local(self.data_with_labels)
         self.segmented_data_with_labels = get_segments_with_sliding_window(
             self.data_with_labels,
             base_window_size=sliding_window_size,

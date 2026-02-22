@@ -11,8 +11,20 @@ to be consumed by a block builder / factory.
 # ---------------------------------------------------------------------
 UNET_BLOCK_BASELINE = {
     "conv_layers": [
-        {"in_channels": None, "out_channels": None, "kernel_size": 3, "padding": 1, "bias": False},
-        {"in_channels": None, "out_channels": None, "kernel_size": 3, "padding": 1, "bias": False},
+        {
+            "in_channels": None,
+            "out_channels": None,
+            "kernel_size": 3,
+            "padding": 1,
+            "bias": False,
+        },
+        {
+            "in_channels": None,
+            "out_channels": None,
+            "kernel_size": 3,
+            "padding": 1,
+            "bias": False,
+        },
     ],
     "norm_type": "GroupNorm",
     "norm_params": {"num_groups": "min(groups, out_ch)"},
@@ -28,8 +40,20 @@ UNET_BLOCK_CONFIG = UNET_BLOCK_BASELINE
 UNET_BLOCK_PREACT = {
     "pre_activation": True,
     "conv_layers": [
-        {"in_channels": None, "out_channels": None, "kernel_size": 3, "padding": 1, "bias": False},
-        {"in_channels": None, "out_channels": None, "kernel_size": 3, "padding": 1, "bias": False},
+        {
+            "in_channels": None,
+            "out_channels": None,
+            "kernel_size": 3,
+            "padding": 1,
+            "bias": False,
+        },
+        {
+            "in_channels": None,
+            "out_channels": None,
+            "kernel_size": 3,
+            "padding": 1,
+            "bias": False,
+        },
     ],
     "norm_type": "GroupNorm",
     "norm_params": {"num_groups": "min(groups, channels)"},
@@ -42,8 +66,20 @@ UNET_BLOCK_PREACT = {
 # ---------------------------------------------------------------------
 UNET_BLOCK_DROPOUT = {
     "conv_layers": [
-        {"in_channels": None, "out_channels": None, "kernel_size": 3, "padding": 1, "bias": False},
-        {"in_channels": None, "out_channels": None, "kernel_size": 3, "padding": 1, "bias": False},
+        {
+            "in_channels": None,
+            "out_channels": None,
+            "kernel_size": 3,
+            "padding": 1,
+            "bias": False,
+        },
+        {
+            "in_channels": None,
+            "out_channels": None,
+            "kernel_size": 3,
+            "padding": 1,
+            "bias": False,
+        },
     ],
     "norm_type": "GroupNorm",
     "norm_params": {"num_groups": "min(groups, out_ch)"},
@@ -66,8 +102,20 @@ UNET_BLOCK_RESIDUAL = {
         "bias": False,
     },
     "conv_layers": [
-        {"in_channels": None, "out_channels": None, "kernel_size": 3, "padding": 1, "bias": False},
-        {"in_channels": None, "out_channels": None, "kernel_size": 3, "padding": 1, "bias": False},
+        {
+            "in_channels": None,
+            "out_channels": None,
+            "kernel_size": 3,
+            "padding": 1,
+            "bias": False,
+        },
+        {
+            "in_channels": None,
+            "out_channels": None,
+            "kernel_size": 3,
+            "padding": 1,
+            "bias": False,
+        },
     ],
     "norm_type": "GroupNorm",
     "norm_params": {"num_groups": "min(groups, out_ch)"},
@@ -81,8 +129,20 @@ UNET_BLOCK_RESIDUAL = {
 # ---------------------------------------------------------------------
 UNET_BLOCK_SILU = {
     "conv_layers": [
-        {"in_channels": None, "out_channels": None, "kernel_size": 3, "padding": 1, "bias": False},
-        {"in_channels": None, "out_channels": None, "kernel_size": 3, "padding": 1, "bias": False},
+        {
+            "in_channels": None,
+            "out_channels": None,
+            "kernel_size": 3,
+            "padding": 1,
+            "bias": False,
+        },
+        {
+            "in_channels": None,
+            "out_channels": None,
+            "kernel_size": 3,
+            "padding": 1,
+            "bias": False,
+        },
     ],
     "norm_type": "GroupNorm",
     "norm_params": {"num_groups": "min(groups, out_ch)"},
@@ -159,8 +219,20 @@ UNET_BLOCK_DEPTHWISE = {
 # ---------------------------------------------------------------------
 UNET_BLOCK_SINGLE_ACTIVATION = {
     "conv_layers": [
-        {"in_channels": None, "out_channels": None, "kernel_size": 3, "padding": 1, "bias": False},
-        {"in_channels": None, "out_channels": None, "kernel_size": 3, "padding": 1, "bias": False},
+        {
+            "in_channels": None,
+            "out_channels": None,
+            "kernel_size": 3,
+            "padding": 1,
+            "bias": False,
+        },
+        {
+            "in_channels": None,
+            "out_channels": None,
+            "kernel_size": 3,
+            "padding": 1,
+            "bias": False,
+        },
     ],
     "norm_type": "GroupNorm",
     "norm_params": {"num_groups": "min(groups, out_ch)"},

@@ -1,29 +1,10 @@
 import os
 import torch
 from typing import List, Tuple
-from structured_data_utils.config.constants import (
-    ESPSG,
-    RES,
-    EMPTY_VAL,
-    STANDARDISATION_TARGET_TIFFS,
-    PERCENTAGE_EMPTY_TARGET,
-    TARGET_NUM_TO_TAKE,
-)
 from common.data_managment import (
     DataWithLabelsGeoTethered,
     SegmentedDataWithLabels,
     DataWithLabels,
-)
-from common.constants import (
-    POSITIVE_LAS_DIR,
-    NEGATIVE_LAS_DIR,
-    POSITIVE_GEOTIFF_DIR,
-    NEGATIVE_GEOTIFF_DIR,
-    COMBINED_GEOTIFF_DIR,
-    COMBINED_LAS_DIR,
-    POSITIVE_TIFF_NAME,
-    COMBINED_TIFF_NAME,
-    DATA_LOCATION,
 )
 import subprocess
 from torchvision.transforms import v2 as trch_trns
@@ -36,25 +17,38 @@ import cv2
 
 import random
 import numpy as np
+import json
 
-VERBOSE = True
+VERBOSE = False
+NEGATIVE_LABEL = 0
+POSITIVE_LABEL = 1
+
+
+def load_config() -> dict:
+    config_path = os.path.join(os.path.dirname(__file__), "config.json")
+    with open(config_path, "r") as f:
+        return json.load(f)
+
+
+CONFIG = load_config()
 
 
 def standardise_geotiff(target_path: str, write_path: str, force: bool = False):
     if os.path.exists(write_path) and not force:
-        print(
-            f"Standardised file already exists at {write_path}. Skipping. Use force=True to override."
-        )
+        if VERBOSE:
+            print(
+                f"Standardised file already exists at {write_path}. Skipping. Use force=True to override."
+            )
         return
 
     p = subprocess.run(
         [
             "gdalwarp",
             "-t_srs",
-            ESPSG,  # e.g. "EPSG:7856"
+            CONFIG["ESPSG"],  # e.g. "EPSG:7856"
             "-tr",
-            RES,
-            RES,  # e.g. "1", "1"
+            CONFIG["RES"],
+            CONFIG["RES"],  # e.g. "1", "1"
             "-tap",  # CRITICAL: align pixel grid
             "-r",
             "bilinear",  # use "near" for masks/classes
@@ -82,7 +76,9 @@ def standardise_dataset(
 
 def standardise_folder(dir: str, force: bool = False, target_files: list = None):
     files_to_process = (
-        target_files if target_files is not None else STANDARDISATION_TARGET_TIFFS
+        target_files
+        if target_files is not None
+        else CONFIG["STANDARDISATION_TARGET_TIFFS"]
     )
 
     for tiff in files_to_process:
@@ -92,8 +88,8 @@ def standardise_folder(dir: str, force: bool = False, target_files: list = None)
 
 
 def offset_meters_to_offset_pixels(offset):
-    offset_x_corrected = int(offset[0] / float(RES))
-    offset_y_corrected = int(offset[1] / float(RES))
+    offset_x_corrected = int(offset[0] / float(CONFIG["RES"]))
+    offset_y_corrected = int(offset[1] / float(CONFIG["RES"]))
     return (offset_x_corrected, offset_y_corrected)
 
 
@@ -103,7 +99,12 @@ def pad_pos_mask_to_match(
     pad_x = other_tensor.shape[-1] - pos_tensor.shape[-1]
     pad_y = other_tensor.shape[-2] - pos_tensor.shape[-2]
 
-    padded = F.pad(pos_tensor, (0, pad_x, 0, pad_y), mode="constant", value=EMPTY_VAL)
+    padded = F.pad(
+        pos_tensor,
+        (0, pad_x, 0, pad_y),
+        mode="constant",
+        value=CONFIG["EMPTY_VAL_GEOTIFF"],
+    )
     pixel_offset = offset_meters_to_offset_pixels(offset)
     # padded = torch.roll(padded, shifts = pixel_offset, dims=(-2,-1))
     assert (
@@ -137,16 +138,19 @@ def load_data_with_labels(folder_name: str) -> DataWithLabelsGeoTethered:
 
     labels = torch.zeros_like(combined[:1])
 
-    pos_mask = positive[0] != EMPTY_VAL
+    pos_mask = positive[0] != CONFIG["EMPTY_VAL_GEOTIFF"]
 
-    labels[0, pos_mask] = 1
+    labels[0, pos_mask] = POSITIVE_LABEL
+    labels[0, ~pos_mask] = NEGATIVE_LABEL
 
     epsg = retrieve_dataset_EPSG(folder_name)
 
-    return DataWithLabelsGeoTethered(combined, labels, epsg, offset_combined, RES)
+    return DataWithLabelsGeoTethered(
+        combined, labels, epsg, offset_combined, CONFIG["RES"]
+    )
 
 
-ROTATION_PER_PATCH = 5
+ROTATION_PER_PATCH = CONFIG["ROTATION_PER_PATCH"]
 
 
 def _apply_rotation_to_patch(
@@ -212,7 +216,10 @@ def _apply_rotation_to_sdwl(
     return result_sdwl
 
 
-def _check_dwl_size(sdwl: SegmentedDataWithLabels, critical_threshold_gb=1.0) -> float:
+def _check_dwl_size(
+    sdwl: SegmentedDataWithLabels,
+    critical_threshold_gb: float = CONFIG["CRITICAL_THRESHOLD_GB"],
+) -> float:
     sdwl_data_size_bytes = sdwl.data.element_size() * sdwl.data.nelement()
     sdwl_labels_size_bytes = sdwl.labels.element_size() * sdwl.labels.nelement()
     sdwl_data_size_gb = (sdwl_data_size_bytes) / (1024**3)
@@ -222,7 +229,7 @@ def _check_dwl_size(sdwl: SegmentedDataWithLabels, critical_threshold_gb=1.0) ->
         print(
             f"SegmentedDataWithLabels size: data={sdwl_data_size_gb:.2f} GB, labels={sdwl_labels_size_gb:.2f} GB, total={sdwl_total_size_gb:.2f} GB"
         )
-    if sdwl_total_size_gb > critical_threshold_gb:
+    if sdwl_total_size_gb > critical_threshold_gb and VERBOSE:
         response = input(
             f"WARNING: SegmentedDataWithLabels is very large ({sdwl_total_size_gb:.2f} GB). Do you want to continue? (y/n): "
         )
@@ -233,15 +240,12 @@ def _check_dwl_size(sdwl: SegmentedDataWithLabels, critical_threshold_gb=1.0) ->
     return sdwl_total_size_gb
 
 
-MAX_ALLOWED_GB = 10
-
-
 def _check_gross_size(gross_size_gb):
     if VERBOSE:
         print(
             f"Gross size of all SegmentedDataWithLabels so far: {gross_size_gb:.2f} GB"
         )
-    if gross_size_gb > MAX_ALLOWED_GB:
+    if gross_size_gb > CONFIG["MAX_ALLOWED_GB"]:
         raise MemoryError(
             f"Aborting due to large SegmentedDataWithLabels size ({gross_size_gb:.2f} GB). Consider reducing window sizes or number of scales."
         )
@@ -275,44 +279,40 @@ def _get_patch_tensors_dwls_at_target_sizes(
         labels_patches = _get_patch_tensors_at_target_size(
             window_size, dwl.labels, stride
         )
-
         sdwl = SegmentedDataWithLabels(data_patches, labels_patches)
+        accepting_indicies = _get_accepting_segment_indecies(
+            sdwl, CONFIG["PERCENTAGE_EMPTY_TARGET"]
+        )
+        sdwl = _get_sdwl_patch_indicies(sdwl, accepting_indicies)
+        sdwls_at_sizes.append(sdwl)
+        _check_accepting_indecies(
+            accepting_indicies, sdwl, CONFIG["TARGET_NUM_TO_TAKE"]
+        )
         gross_size_gb += _check_dwl_size(sdwl)
         _check_gross_size(gross_size_gb)
-        sdwls_at_sizes.append(sdwl)
-        accepting_indicies = _get_accepting_segment_indecies(
-            sdwl, PERCENTAGE_EMPTY_TARGET
-        )
-        _check_accepting_indecies(accepting_indicies, sdwl, TARGET_NUM_TO_TAKE)
     return sdwls_at_sizes
 
 
-def _size_change_percentage_from_gammavariate(alpha, beta) -> float:
-    size_change_percentage = random.gammavariate(alpha, beta) - 30
-    return size_change_percentage
+def _scale_multiplier_from_gammavariate(
+    alpha: float = CONFIG["SIZE_CHANGE_ALPHA"], beta: float = CONFIG["SIZE_CHANGE_BETA"]
+) -> float:
+    scale_multiplier = random.gammavariate(alpha, beta)
+    if scale_multiplier < 0.1 or scale_multiplier > 2.0:
+        return _scale_multiplier_from_gammavariate(alpha, beta)
+    return scale_multiplier
 
 
-def _get_size_change_percentages(
-    number_of_scales: int, alpha: float, beta: float
+def _get_scale_change_multipliers(
+    number_of_scales: int,
 ) -> List[float]:
-    size_change_percentages = [
-        _size_change_percentage_from_gammavariate(alpha, beta)
-        for _ in range(number_of_scales)
+    scale_change_multipliers = [
+        _scale_multiplier_from_gammavariate() for _ in range(number_of_scales)
     ]
-    return size_change_percentages
+    print(f"Scale change multipliers: {scale_change_multipliers}")
+    return scale_change_multipliers
 
 
-def _get_scale_factors_from_size_change_percentages(
-    size_change_percentages: List[float],
-) -> List[float]:
-    scale_factors = [
-        1 + (size_change_percentage / 100)
-        for size_change_percentage in size_change_percentages
-    ]
-    return scale_factors
-
-
-def _get_window_sizes_from_scale_factors(
+def _get_window_sizes_from_scale_multipliers(
     base_window_size: int, scale_factors: List[float]
 ) -> List[int]:
     modified_window_sizes = [
@@ -325,21 +325,16 @@ def _make_sdwls_at_varied_scales(
     dwl: DataWithLabelsGeoTethered,
     base_window_size: int,
     stride: int,
-    number_of_scales: int,
+    number_of_scales: int = CONFIG["DEFAULT_NUMBER_OF_SCALES"],
 ) -> List[SegmentedDataWithLabels]:
     if VERBOSE:
         print(f"dwl shapes -- data: {dwl.data.shape}, labels: {dwl.labels.shape}")
     assert (
         dwl.data.dim() == 3
     ), f"Expected dwl.data to be a 3D tensor of shape (C,H,W), but got {dwl.data.shape}"
-    size_change_percentages = _get_size_change_percentages(
-        number_of_scales, alpha=0.85, beta=117.6  # TODO: fix these magic numbers
-    )
-    scale_factors = _get_scale_factors_from_size_change_percentages(
-        size_change_percentages
-    )
-    modified_window_sizes = _get_window_sizes_from_scale_factors(
-        base_window_size, scale_factors
+    scale_multipliers = _get_scale_change_multipliers(number_of_scales)
+    modified_window_sizes = _get_window_sizes_from_scale_multipliers(
+        base_window_size, scale_multipliers
     )
     dwls_at_targeted_sizes = _get_patch_tensors_dwls_at_target_sizes(
         modified_window_sizes, dwl, stride
@@ -375,7 +370,7 @@ def _resize_sdwl_patches(
     return SegmentedDataWithLabels(patch_resized, label_resized)
 
 
-def _take_indicies(
+def _get_sdwl_patch_indicies(
     sdwl: SegmentedDataWithLabels, indicies: torch.Tensor
 ) -> SegmentedDataWithLabels:
     sda_taken = SegmentedDataWithLabels(
@@ -385,6 +380,15 @@ def _take_indicies(
     return sda_taken
 
 
+def _get_percentage_of_un_reduced_tensor(
+    num_positive: int, total: int, percentage_empty_target: float
+) -> float:
+    if num_positive == 0:
+        return 0.0
+    percentage_to_keep_of_total = percentage_empty_target / (total - num_positive)
+    return percentage_to_keep_of_total
+
+
 def _get_accepting_segment_indecies(
     sdwl: SegmentedDataWithLabels,
     percentage_empty_target: float,
@@ -392,12 +396,30 @@ def _get_accepting_segment_indecies(
 
     segmented_labels = sdwl.labels
 
-    empty_mask = segmented_labels.flatten(start_dim=1).eq(0).all(dim=1)
+    empty_mask = (segmented_labels == NEGATIVE_LABEL).all(dim=(1, 2, 3))
 
-    accept_empty = torch.rand_like(empty_mask.float()) < percentage_empty_target
+    total = segmented_labels.shape[0]
+    num_empty = empty_mask.sum().item()
+    num_positive = (~empty_mask).sum().item()
 
-    accepting = (~empty_mask) | accept_empty
-    return torch.nonzero(accepting).squeeze(1).tolist()
+    empty_indices = torch.where(empty_mask)[0]
+    non_empty_indices = torch.where(~empty_mask)[0]
+
+    percentage_to_keep_of_total = _get_percentage_of_un_reduced_tensor(
+        num_positive, total, percentage_empty_target
+    )
+
+    num_to_keep = int(percentage_to_keep_of_total * total)
+
+    num_to_keep = min(num_to_keep, num_empty)
+    perm = torch.randperm(num_empty, device=empty_indices.device)
+    kept_empty_indices = empty_indices[perm[:num_to_keep]]
+
+    accepting_indices = torch.cat([non_empty_indices, kept_empty_indices])
+
+    accepting_indices = accepting_indices.sort().values
+
+    return accepting_indices
 
 
 def _get_num_to_take_per_scale(target: int, number_of_scales: int = None) -> int:
@@ -408,7 +430,9 @@ def _get_num_to_take_per_scale(target: int, number_of_scales: int = None) -> int
 
 
 def _check_accepting_indecies(
-    accepting_indicies, sdwl: SegmentedDataWithLabels, target_num_to_take: int
+    accepting_indicies: torch.Tensor,
+    sdwl: SegmentedDataWithLabels,
+    target_num_to_take: int,
 ):
     if len(accepting_indicies) / sdwl.data.shape[0] > 0.1:
         print(
@@ -445,15 +469,55 @@ def _randomise_order_of_sdwl_patches(
     sdwl: SegmentedDataWithLabels,
 ) -> SegmentedDataWithLabels:
     indices = torch.randperm(sdwl.data.shape[0])
-    sdwl = _take_indicies(sdwl, indices)
+    sdwl = _get_sdwl_patch_indicies(sdwl, indices)
     return sdwl
+
+
+def apply_random_guassian_blur_to_sdwl(
+    sdwl: SegmentedDataWithLabels, kernel_size: int = 3, sigma: float = 3.0
+) -> SegmentedDataWithLabels:
+    blurred_data_segments = []
+    for idx in range(sdwl.data.shape[0]):
+        patch = DataWithLabels(sdwl.data[idx], sdwl.labels[idx])
+        blurred_patch = apply_random_guassian_blur_to_dwl(
+            patch,
+            kernel_size=kernel_size,
+            sigma=sigma,
+        )
+        blurred_data_segments.append(blurred_patch.data)
+
+    stacked_data = torch.stack(blurred_data_segments, dim=0)
+    result_sdwl = SegmentedDataWithLabels(
+        stacked_data,
+        sdwl.labels,
+    )
+
+    return result_sdwl
+
+
+def apply_random_guassian_blur_to_dwl(
+    dwl_segment: DataWithLabels, kernel_size: int = 3, sigma: float = 3.0
+) -> DataWithLabels:
+    if random.random() < 0.33:
+        return dwl_segment
+    sigma = sigma * random.uniform(0.5, 1.5)
+    kernel_size = int(kernel_size * random.uniform(1, 3))
+    if kernel_size % 2 == 0:
+        kernel_size += 1
+    data = tv_tensors.Image(dwl_segment.data)
+    blurred_data = trch_trns.functional.gaussian_blur(
+        data,
+        kernel_size=kernel_size,
+        sigma=sigma,
+    )
+    return DataWithLabels(torch.Tensor(blurred_data), dwl_segment.labels)
 
 
 def get_segments_with_sliding_window(
     dwl: DataWithLabelsGeoTethered,
-    base_window_size=300,
-    stride=300,
-    number_of_scales=10,
+    base_window_size: int = CONFIG["DEFAULT_BASE_WINDOW_SIZE"],
+    stride: int = CONFIG["DEFAULT_STRIDE"],
+    number_of_scales: int = CONFIG["DEFAULT_NUMBER_OF_SCALES"],
 ) -> SegmentedDataWithLabels:
     dwls_at_varried_sizes = _make_sdwls_at_varied_scales(
         dwl,
@@ -463,14 +527,16 @@ def get_segments_with_sliding_window(
     )
 
     target_num_patches_to_take = _get_num_to_take_per_scale(
-        TARGET_NUM_TO_TAKE,
+        CONFIG["TARGET_NUM_TO_TAKE"],
         number_of_scales=number_of_scales,
     )
+
     sdwls = []
     for sdwl in dwls_at_varried_sizes:
         random_indices = _get_random_indicies(sdwl, target_num_patches_to_take)
-        sdwl = _take_indicies(sdwl, random_indices)
+        sdwl = _get_sdwl_patch_indicies(sdwl, random_indices)
         sdwl = _apply_rotation_to_sdwl(sdwl)
+        sdwl = apply_random_guassian_blur_to_sdwl(sdwl)
         sdwl = _resize_sdwl_patches(sdwl, base_window_size)
         sdwls.append(sdwl)
     sdwl = _stack_sdwls(sdwls)
@@ -493,7 +559,7 @@ def remove_empty_segments(
 
 def remove_segments_missing_positive(
     data_with_labels: SegmentedDataWithLabels,
-    keep_neg_prob: float = 0.5,
+    keep_neg_prob: float = CONFIG["DEFAULT_KEEP_NEG_PROB"],
 ) -> SegmentedDataWithLabels:
     y = data_with_labels.labels  # (N,H,W) or (N,1,H,W) or (N,C,H,W)
 
@@ -520,11 +586,9 @@ def infer_nans_segmented(sdwl: SegmentedDataWithLabels) -> SegmentedDataWithLabe
 
 def normalise_tensor_local(
     tensor: torch.Tensor,
-    kernel_size: int = 501,
-    sigma: float | None = None,
-    eps: float = 1e-6,
-    target_mean: float = 0.0,
-    target_std: float = 1.0,
+    kernel_size: int = CONFIG["DEFAULT_KERNEL_SIZE"],
+    sigma: float | None = CONFIG["DEFAULT_SIGMA"],
+    eps: float = CONFIG["DEFAULT_EPS"],
 ) -> torch.Tensor:
     """
     Local background removal using a Gaussian KDE-like smoothing.
@@ -533,8 +597,8 @@ def normalise_tensor_local(
     """
     x = tensor.float()
 
-    if kernel_size < 1 or kernel_size % 2 == 0:
-        raise ValueError("kernel_size must be an odd positive integer")
+    if kernel_size % 2 == 0:
+        kernel_size += 1
 
     added_batch = False
     added_channel = False
@@ -596,16 +660,6 @@ def normalise_tensor_local(
         out_min = out[out_finite].min()
         out = out - out_min
 
-        out_vals = out[out_finite]
-        out_mean = out_vals.mean()
-        out_std = out_vals.std(unbiased=False).clamp_min(eps)
-        out = (out - out_mean) / out_std
-        out = out * target_std + target_mean
-
-        shifted_min = out[out_finite].min()
-        if shifted_min < 0:
-            out = out - shifted_min
-
     if added_channel:
         out = out.squeeze(1)
     if added_batch:
@@ -616,11 +670,9 @@ def normalise_tensor_local(
 
 def normalise_dwl_local(
     dwl: DataWithLabels | DataWithLabelsGeoTethered,
-    kernel_size: int,
+    kernel_size: int = CONFIG["DEFAULT_KERNEL_SIZE"],
     sigma: float | None = None,
     eps: float = 1e-6,
-    target_mean: float = 0.0,
-    target_std: float = 1.0,
 ) -> DataWithLabels | DataWithLabelsGeoTethered:
     """
     Apply local normalization to DataWithLabels.data while preserving labels and metadata.
@@ -662,8 +714,6 @@ def normalise_dwl_local(
         kernel_size=kernel_size,
         sigma=sigma,
         eps=eps,
-        target_mean=target_mean,
-        target_std=target_std,
     )
     _print_stats("local_normalise:output", out)
     if isinstance(dwl, DataWithLabelsGeoTethered):
@@ -673,7 +723,7 @@ def normalise_dwl_local(
 
 
 def determanistic_splice_tensors(
-    tensors: List[torch.Tensor], seed: int = 0
+    tensors: List[torch.Tensor], seed: int = CONFIG["DEFAULT_SEED"]
 ) -> torch.Tensor:
     n_max = max(t.shape[0] for t in tensors)
     g = torch.Generator(device="cpu").manual_seed(seed)
@@ -726,7 +776,7 @@ def tensor_and_offset_from_geotiff(
 def get_positive_geotiff_tensor_and_offset(
     folder: str,
 ) -> Tuple[torch.Tensor, Tuple[int, int]]:
-    path = os.path.join(DATA_LOCATION, folder, POSITIVE_TIFF_NAME)
+    path = os.path.join(CONFIG["DATA_LOCATION"], folder, CONFIG["POSITIVE_TIFF_NAME"])
     if not os.path.exists(path):
         print(
             f"Positive geotiff not found at: {path}. Using empty tensor and offset for pos class (0,0)."
@@ -739,13 +789,17 @@ def get_positive_geotiff_tensor_and_offset(
 def get_combined_geotiff_tensor_and_offset(
     folder: str,
 ) -> Tuple[torch.Tensor, Tuple[int, int]]:
-    path = os.path.join(DATA_LOCATION, folder, COMBINED_TIFF_NAME)
+    path = os.path.join(CONFIG["DATA_LOCATION"], folder, CONFIG["COMBINED_TIFF_NAME"])
     return tensor_and_offset_from_geotiff(path)
 
 
 def retrieve_dataset_EPSG(folder: str) -> int:
-    combined_path = os.path.join(DATA_LOCATION, folder, COMBINED_TIFF_NAME)
-    positive_path = os.path.join(DATA_LOCATION, folder, POSITIVE_TIFF_NAME)
+    combined_path = os.path.join(
+        CONFIG["DATA_LOCATION"], folder, CONFIG["COMBINED_TIFF_NAME"]
+    )
+    positive_path = os.path.join(
+        CONFIG["DATA_LOCATION"], folder, CONFIG["POSITIVE_TIFF_NAME"]
+    )
 
     with rasterio.open(combined_path) as reader:
         combined_epsg = reader.crs.to_epsg()
@@ -756,6 +810,16 @@ def retrieve_dataset_EPSG(folder: str) -> int:
 
         if combined_epsg != positive_epsg:
             raise ValueError(
-                f"EPSG mismatch: {COMBINED_TIFF_NAME} has EPSG:{combined_epsg}, {POSITIVE_TIFF_NAME} has EPSG:{positive_epsg}."
+                f"EPSG mismatch: {CONFIG['COMBINED_TIFF_NAME']} has EPSG:{combined_epsg}, {CONFIG['POSITIVE_TIFF_NAME']} has EPSG:{positive_epsg}."
             )
     return combined_epsg
+
+
+def standardise_dwl(dwl: DataWithLabelsGeoTethered) -> DataWithLabelsGeoTethered:
+    """
+    Standardize a DataWithLabels by applying the same preprocessing as in training pipeline,
+    excluding segmentation, rotation, and duplication.
+    """
+    dwl.data = put_nans_in_neggative_positions(dwl.data)
+    dwl = normalise_dwl_local(dwl, kernel_size=CONFIG["DEFAULT_KERNEL_SIZE"])
+    return dwl

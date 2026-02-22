@@ -90,7 +90,7 @@ class SimpleUnet(nn.Module):
         ch = features[-1] * 2
         for f in rev:
             # resize-conv (less checkerboard than ConvTranspose2d)
-            self.ups.append(nn.Conv2d(ch, f, kernel_size=3, padding=0, bias=True))
+            self.ups.append(nn.Conv2d(ch, f, kernel_size=3, padding=1, bias=True))
             self.ups.append(self.Block(f * 2, f, block_config=block_config))
             ch = f
 
